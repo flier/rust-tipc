@@ -1,5 +1,4 @@
-use std::ffi::CStr;
-use std::io::prelude::*;
+use std::io::{self, prelude::*};
 use std::str;
 use std::time::Duration;
 
@@ -9,8 +8,7 @@ use mio::{
     Events, Poll, PollOpt, Ready, Token,
 };
 use tipc::{
-    topo, Builder, Datagram, Instance, Recv, Scope, SeqPacket, ServiceAddr, ServiceRange, Stream,
-    Type,
+    topo, Builder, Datagram, Instance, Scope, SeqPacket, ServiceAddr, ServiceRange, Stream, Type,
 };
 
 const RDM_SRV_TYPE: Type = 18888;
@@ -42,7 +40,7 @@ fn rdm_service_demo(datagram: &Datagram) -> Fallible<Scope> {
     let mut buf = [0; BUF_SZ];
 
     match datagram.recv_from(&mut buf[..]) {
-        Ok((Recv::Message(len), srv)) => {
+        Ok((len, srv)) => {
             let msg = str::from_utf8(&buf[..len])?;
 
             println!("Received response: {}", msg);
@@ -77,11 +75,8 @@ fn rdm_reject_demo(datagram: &Datagram, scope: Scope) -> Fallible<()> {
     let mut buf = [0; BUF_SZ];
 
     match datagram.recv_from(&mut buf[..]) {
-        Ok((Recv::Rejected(err), srv)) => {
-            let msg = CStr::from_bytes_with_nul(&buf[..])?;
-
-            println!("Received rejected msg: {}", msg.to_string_lossy());
-            println!("               <-- {:?}, err {}", srv, err);
+        Err(ref err) if err.kind() == io::ErrorKind::Other => {
+            println!("Received rejected msg: {}", err)
         }
         res => println!("unexpected response {:?}", res),
     }
@@ -97,7 +92,7 @@ fn stream_service_demo(builder: &Builder<Stream>) -> Fallible<()> {
 
     println!("Connecting to:              -->{}", srv);
 
-    let mut stream = builder.try_clone()?.connect(srv, Scope::Global)?;
+    let mut stream = builder.try_clone()?.connect(srv)?;
 
     let msg = "Hello World";
 
@@ -123,7 +118,7 @@ fn seqpacket_service_demo(builder: &Builder<SeqPacket>) -> Fallible<()> {
 
     println!("Connecting to:              -->{}", srv);
 
-    let seq_packet = builder.try_clone()?.connect(srv, Scope::Global)?;
+    let seq_packet = builder.try_clone()?.connect(srv)?;
 
     let msg = "Hello World";
 

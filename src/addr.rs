@@ -1,9 +1,9 @@
 use core::fmt;
 use core::num::NonZeroU32;
+use core::num::ParseIntError;
 use core::ops::{Range, RangeFrom, RangeFull, RangeTo};
 use core::str::FromStr;
 
-use std::num::ParseIntError;
 use std::sync::Once;
 
 use failure::Fail;
@@ -177,25 +177,25 @@ pub enum AddrParseError {
     MissingRef,
 
     #[fail(display = "invalid reference, {}", _0)]
-    InvalidRef(ParseIntError),
+    InvalidRef(#[cause] ParseIntError),
 
     #[fail(display = "missing type")]
     MissingType,
 
     #[fail(display = "invalid type, {}", _0)]
-    InvalidType(ParseIntError),
+    InvalidType(#[cause] ParseIntError),
 
     #[fail(display = "missing instance")]
     MissingInstance,
 
     #[fail(display = "invalid instance, {}", _0)]
-    InvalidInstance(ParseIntError),
+    InvalidInstance(#[cause] ParseIntError),
 
     #[fail(display = "missing node")]
     MissingNode,
 
     #[fail(display = "invalid node, {}", _0)]
-    InvalidNode(ParseIntError),
+    InvalidNode(#[cause] ParseIntError),
 }
 
 impl FromStr for SocketAddr {

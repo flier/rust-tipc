@@ -1,3 +1,5 @@
+//! Topology Server
+
 use core::mem::{self, MaybeUninit};
 use core::ops::Deref;
 use core::time::Duration;
@@ -22,7 +24,7 @@ impl Server {
         let sock = sock::new(libc::SOCK_SEQPACKET)?;
         let addr = ServiceAddr::new(ffi::TIPC_TOP_SRV, ffi::TIPC_TOP_SRV);
 
-        sock.connect(addr, scope)?;
+        sock.connect((addr, scope))?;
 
         Ok(Server(sock))
     }

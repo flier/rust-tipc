@@ -7,9 +7,7 @@ use mio::{
     unix::{EventedFd, UnixReady},
     Events, Poll, PollOpt, Ready, Token,
 };
-use tipc::{
-    self, Builder, Datagram, Listener, Recv, SeqPacket, ServiceRange, Stream, Type, Visibility,
-};
+use tipc::{self, Builder, Datagram, Listener, SeqPacket, ServiceRange, Stream, Type, Visibility};
 
 const RDM_SRV_TYPE: Type = 18888;
 const STREAM_SRV_TYPE: Type = 17777;
@@ -44,7 +42,7 @@ fn recv_rdm_msg(rdm: &Datagram) -> Fallible<()> {
     println!("\n-------------------------------------");
 
     let cli = match rdm.recv_from(&mut buf[..]) {
-        Ok((Recv::Message(len), cli)) => {
+        Ok((len, cli)) => {
             println!(
                 "Received msg: `{}` on SOCK_RDM",
                 str::from_utf8(&buf[..len])?

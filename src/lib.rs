@@ -4,7 +4,12 @@ mod addr;
 mod sock;
 pub mod topo;
 
-#[allow(non_camel_case_types, dead_code, non_snake_case, clippy::unreadable_literal)]
+#[allow(
+    non_camel_case_types,
+    dead_code,
+    non_snake_case,
+    clippy::unreadable_literal
+)]
 mod raw;
 
 pub use addr::{
@@ -12,6 +17,6 @@ pub use addr::{
     Visibility,
 };
 pub use sock::{
-    datagram, rdm, seq_packet, stream, Builder, Datagram, Importance, Listener, Recv, SendToAddr,
-    SeqPacket, Stream,
+    datagram, rdm, seq_packet, stream, Builder, Datagram, Importance, IntoConnectAddr,
+    IntoSendToAddr, Listener, Rejected, SeqPacket, Stream,
 };
