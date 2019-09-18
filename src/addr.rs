@@ -35,7 +35,7 @@ macro_rules! addr {
     ) => {
         $(#[$outer])*
         #[repr(transparent)]
-        #[derive(Clone, Copy, Debug, Default, Hash, PartialEq)]
+        #[derive(Clone, Copy, Default, Hash, PartialEq)]
         pub struct $name(ffi::$raw);
 
         impl $name {
@@ -50,6 +50,16 @@ macro_rules! addr {
                     (self.0).$field
                 }
             )*
+        }
+
+        impl fmt::Debug for $name {
+            fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+                fmt.debug_struct(stringify!($name))
+                $(
+                    .field(stringify!($prop), &(self.0).$field)
+                )*
+                    .finish()
+            }
         }
 
         impl From<ffi::$raw> for $name {
@@ -253,10 +263,6 @@ impl FromStr for ServiceRange {
             .next()
             .ok_or(MissingInstance)
             .and_then(|s| u32::from_str_radix(s, 10).map_err(InvalidInstance))?;
-        let node = iter
-            .next()
-            .ok_or(MissingNode)
-            .and_then(|s| u32::from_str_radix(s, 16).map_err(InvalidNode))?;
 
         Ok(ServiceRange(ffi::tipc_name_seq {
             type_,
@@ -268,16 +274,8 @@ impl FromStr for ServiceRange {
 
 impl SocketAddr {
     /// A Service Scope indicator
-    pub fn scope(&self) -> Scope {
+    pub fn scope(self) -> Scope {
         NonZeroU32::new(self.node()).map_or(Scope::Global, Scope::Node)
-    }
-
-    pub(crate) fn node_scope(&self) -> i8 {
-        if self.node() == own_node() {
-            ffi::TIPC_NODE_SCOPE as i8
-        } else {
-            ffi::TIPC_CLUSTER_SCOPE as i8
-        }
     }
 }
 
@@ -401,14 +399,6 @@ pub enum Scope {
     Node(NonZeroU32),
 }
 
-/// The visibility scope.
-#[repr(i8)]
-#[derive(Clone, Copy, Debug, PartialEq, Hash)]
-pub enum Visibility {
-    Cluster = ffi::TIPC_CLUSTER_SCOPE as i8,
-    Node = ffi::TIPC_NODE_SCOPE as i8,
-}
-
 impl From<Scope> for u32 {
     fn from(scope: Scope) -> u32 {
         match scope {
@@ -418,17 +408,35 @@ impl From<Scope> for u32 {
     }
 }
 
+impl From<u32> for Scope {
+    fn from(node: u32) -> Self {
+        Self::new(node)
+    }
+}
+
 impl Scope {
-    pub fn own() -> Self {
-        NonZeroU32::new(own_node()).map_or(Scope::Global, Scope::Node)
+    pub fn new(node: u32) -> Self {
+        NonZeroU32::new(node).map_or(Scope::Global, Scope::Node)
     }
 
-    pub fn visibility(&self) -> Visibility {
+    pub fn own() -> Self {
+        Self::new(own_node())
+    }
+
+    pub fn visibility(self) -> Visibility {
         match self {
             Scope::Node(node) if node.get() == own_node() => Visibility::Node,
             _ => Visibility::Cluster,
         }
     }
+}
+
+/// The visibility scope.
+#[repr(i8)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash)]
+pub enum Visibility {
+    Cluster = ffi::TIPC_CLUSTER_SCOPE as i8,
+    Node = ffi::TIPC_NODE_SCOPE as i8,
 }
 
 #[cfg(test)]

@@ -1,16 +1,21 @@
 use core::mem::{self, MaybeUninit};
+use core::ops::Deref;
 use core::time::Duration;
 
 use std::io;
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
 use crate::{
     addr::{Scope, ServiceAddr, ServiceRange, SocketAddr},
-    raw as ffi,
+    forward_raw_fd_traits, raw as ffi,
     sock::{self, IntoResult, Socket},
 };
 
+#[repr(transparent)]
+#[derive(Debug)]
 pub struct Server(Socket);
+
+forward_raw_fd_traits!(Server => Socket);
 
 impl Server {
     pub fn connect(scope: Scope) -> io::Result<Self> {
@@ -112,6 +117,7 @@ impl Server {
     }
 }
 
+#[derive(Debug)]
 pub struct Event {
     pub service: ServiceAddr,
     pub socket: SocketAddr,

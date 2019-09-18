@@ -2,9 +2,9 @@
 
 mod addr;
 mod sock;
-mod topo;
+pub mod topo;
 
-#[allow(non_camel_case_types, dead_code, non_snake_case)]
+#[allow(non_camel_case_types, dead_code, non_snake_case, clippy::unreadable_literal)]
 mod raw;
 
 pub use addr::{
@@ -12,6 +12,6 @@ pub use addr::{
     Visibility,
 };
 pub use sock::{
-    dgram, rdm, seq_packet, stream, Builder, Datagram, Importance, Listener, Recv, Stream,
+    datagram, rdm, seq_packet, stream, Builder, Datagram, Importance, Listener, Recv, SendToAddr,
+    SeqPacket, Stream,
 };
-pub use topo::Server;
