@@ -320,6 +320,32 @@ impl<T> Listener<T> {
                 .map(|sd| (T::from_raw_fd(sd), sa.assume_init().addr.id.into()))
         }
     }
+
+    /// Returns an iterator over the connections being received on this listener.
+    ///
+    /// The returned iterator will never return `None` and will also not yield the peer's `SocketAddr` structure.
+    /// Iterating over it is equivalent to calling `accept` in a loop.
+    pub fn incoming(&self) -> Incoming<T> {
+        Incoming { listener: self }
+    }
+}
+
+/// An iterator that infinitely accepts connections on a `Listener`.
+///
+/// This struct is created by the incoming method on `Listener`. See its documentation for more.
+pub struct Incoming<'a, T> {
+    listener: &'a Listener<T>,
+}
+
+impl<'a, T> Iterator for Incoming<'a, T>
+where
+    T: FromRawFd,
+{
+    type Item = io::Result<T>;
+
+    fn next(&mut self) -> Option<io::Result<T>> {
+        Some(self.listener.accept().map(|p| p.0))
+    }
 }
 
 /// A TIPC stream between a local and a remote socket.
