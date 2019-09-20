@@ -8,12 +8,13 @@ use core::slice;
 use core::time::Duration;
 
 use std::io;
+use std::net::Shutdown;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
 use failure::{format_err, Error, Fail};
 
 use crate::{
-    addr::{ServiceAddr, ServiceRange, SocketAddr, Visibility, TIPC_ADDR_MCAST},
+    addr::{Instance, ServiceAddr, ServiceRange, SocketAddr, Type, Visibility, TIPC_ADDR_MCAST},
     raw as ffi, Scope,
 };
 
@@ -375,6 +376,11 @@ impl Stream {
         builder.connect(addr)
     }
 
+    /// Shut down the read, write, or both halves of this connection.
+    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        self.0.shutdown(how)
+    }
+
     /// Moves this stream into or out of nonblocking mode.
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.0.set_nonblocking(nonblocking)
@@ -440,6 +446,11 @@ impl SeqPacket {
         builder.connect(addr)
     }
 
+    /// Shut down the read, write, or both halves of this connection.
+    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        self.0.shutdown(how)
+    }
+
     /// Moves this stream into or out of nonblocking mode.
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.0.set_nonblocking(nonblocking)
@@ -462,12 +473,24 @@ impl SeqPacket {
         self.0.recv(buf, false)
     }
 
+    /// Receives data from the socket.
+    ///
+    /// On success, returns the number of bytes read and the address from whence the data came.
+    pub fn recv_from<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<(usize, SocketAddr)> {
+        self.0.recv_from(buf)
+    }
+
     /// Sends data on the socket to the remote address to which it is connected.
     ///
     /// The `connect` method will connect this socket to a remote address.
     /// This method will fail if the socket is not connected.
     pub fn send<T: AsRef<[u8]>>(&self, buf: T) -> io::Result<usize> {
         self.0.send(buf)
+    }
+
+    /// Sends data on the socket to the given address. On success, returns the number of bytes written.
+    pub fn send_to<T: AsRef<[u8]>, A: IntoSendToAddr>(&self, buf: T, dst: A) -> io::Result<usize> {
+        self.0.send_to(buf, dst)
     }
 }
 
@@ -524,17 +547,7 @@ impl Datagram {
     ///
     /// On success, returns the number of bytes read and the address from whence the data came.
     pub fn recv_from<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<(usize, SocketAddr)> {
-        match self.0.recv_from(buf)? {
-            (Recv::Message(len), addr) => Ok((len, addr)),
-            (Recv::Rejected(err), _) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                Error::from(Rejected(err)),
-            )),
-            (msg, _) => Err(io::Error::new(
-                io::ErrorKind::Other,
-                format_err!("unexpected group event: {:?}", msg),
-            )),
-        }
+        self.0.recv_from(buf)
     }
 
     /// Sends data on the socket to the remote address to which it is connected.
@@ -715,6 +728,21 @@ impl Socket {
         .into_result()
     }
 
+    /// Shut down the read, write, or both halves of this connection.
+    fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        unsafe {
+            libc::shutdown(
+                self.as_raw_fd(),
+                match how {
+                    Shutdown::Read => libc::SHUT_RD,
+                    Shutdown::Write => libc::SHUT_WR,
+                    Shutdown::Both => libc::SHUT_RDWR,
+                },
+            )
+        }
+        .into_result()
+    }
+
     /// Sends data on the socket to the remote address to which it is connected.
     ///
     /// The `connect` method will connect this socket to a remote address.
@@ -788,7 +816,21 @@ impl Socket {
     /// Receives data from the socket.
     ///
     /// On success, returns the number of bytes read and the address from whence the data came.
-    fn recv_from<T: AsMut<[u8]>>(&self, mut buf: T) -> io::Result<(Recv, SocketAddr)> {
+    fn recv_from<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<(usize, SocketAddr)> {
+        match self.recv_msg(buf)? {
+            (Recv::Message(len), addr) => Ok((len, addr)),
+            (Recv::Rejected(err), _) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                Error::from(Rejected(err)),
+            )),
+            (msg, _) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                format_err!("unexpected group event: {:?}", msg),
+            )),
+        }
+    }
+
+    fn recv_msg<T: AsMut<[u8]>>(&self, mut buf: T) -> io::Result<(Recv, SocketAddr)> {
         let buf = buf.as_mut();
         let mut addr = MaybeUninit::<[ffi::sockaddr_tipc; 2]>::zeroed();
         let addr_len = mem::size_of::<[ffi::sockaddr_tipc; 2]>() as u32;
@@ -917,6 +959,13 @@ pub trait IntoConnectAddr: Into<ffi::sockaddr_tipc> {}
 
 impl IntoConnectAddr for ServiceAddr {}
 impl IntoConnectAddr for (ServiceAddr, Scope) {}
+impl IntoConnectAddr for (Type, Instance) {}
+
+impl From<(Type, Instance)> for ffi::sockaddr_tipc {
+    fn from((ty, instance): (Type, Instance)) -> Self {
+        ServiceAddr::new(ty, instance).into()
+    }
+}
 
 /// Into a remote address to sends data to.
 pub trait IntoSendToAddr: Into<ffi::sockaddr_tipc> {}

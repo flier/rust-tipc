@@ -62,6 +62,12 @@ macro_rules! addr {
             }
         }
 
+        impl From<( $( $ty ),* )> for $name {
+            fn from( ( $( $field ),* ) : ( $( $ty ),* ) ) -> Self {
+                Self( ffi::$raw { $( $field ),* } )
+            }
+        }
+
         impl From<ffi::$raw> for $name {
             fn from(addr: ffi::$raw) -> Self {
                 Self(addr)
@@ -139,6 +145,12 @@ addr! {
 impl From<ServiceAddr> for ServiceRange {
     fn from(service: ServiceAddr) -> Self {
         ServiceRange::with_range(service.ty(), service.instance())
+    }
+}
+
+impl<T: ToInstanceRange> From<(Type, T)> for ServiceRange {
+    fn from((ty, range): (Type, T)) -> Self {
+        ServiceRange::with_range(ty, range)
     }
 }
 
@@ -435,6 +447,7 @@ impl Scope {
 #[repr(i8)]
 #[derive(Clone, Copy, Debug, PartialEq, Hash)]
 pub enum Visibility {
+    Zone = ffi::TIPC_ZONE_SCOPE as i8,
     Cluster = ffi::TIPC_CLUSTER_SCOPE as i8,
     Node = ffi::TIPC_NODE_SCOPE as i8,
 }

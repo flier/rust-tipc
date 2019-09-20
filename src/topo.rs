@@ -28,10 +28,14 @@ pub fn connect(scope: Scope) -> io::Result<Server> {
     Ok(Server(sock))
 }
 
-pub fn wait(service: ServiceAddr, scope: Scope, expire: Option<Duration>) -> io::Result<bool> {
+pub fn wait<A: Into<ServiceAddr>>(
+    service: A,
+    scope: Scope,
+    expire: Option<Duration>,
+) -> io::Result<bool> {
     let srv = connect(scope)?;
 
-    srv.subscribe(service, false, expire)?;
+    srv.subscribe(service.into(), false, expire)?;
 
     loop {
         let evt = srv.recv()?;
@@ -53,9 +57,9 @@ pub struct Server(Socket);
 forward_raw_fd_traits!(Server => Socket);
 
 impl Server {
-    pub fn subscribe<T: Into<ServiceRange>>(
+    pub fn subscribe<A: Into<ServiceRange>>(
         &self,
-        service_range: T,
+        service_range: A,
         all: bool,
         expire: Option<Duration>,
     ) -> io::Result<()> {
