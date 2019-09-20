@@ -282,7 +282,7 @@ impl SocketAddr {
 static mut OWN_NODE: u32 = 0;
 static OWN_NODE_INIT: Once = Once::new();
 
-fn own_node() -> u32 {
+pub fn own_node() -> u32 {
     unsafe {
         OWN_NODE_INIT.call_once(|| {
             OWN_NODE = sock::new(libc::SOCK_RDM)

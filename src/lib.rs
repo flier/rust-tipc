@@ -13,8 +13,8 @@ pub mod topo;
 mod raw;
 
 pub use addr::{
-    AddrParseError, Instance, Scope, ServiceAddr, ServiceRange, SocketAddr, ToInstanceRange, Type,
-    Visibility,
+    own_node, AddrParseError, Instance, Scope, ServiceAddr, ServiceRange, SocketAddr,
+    ToInstanceRange, Type, Visibility,
 };
 pub use sock::{
     datagram, rdm, seq_packet, stream, Builder, Datagram, Importance, Incoming, IntoConnectAddr,

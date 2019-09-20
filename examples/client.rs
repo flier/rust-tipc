@@ -143,7 +143,7 @@ fn main() -> Fallible<()> {
 
     println!("Waiting for Service {}", srv);
 
-    topo::Server::wait(srv, Scope::Global, None)?;
+    topo::wait(srv, Scope::Global, None)?;
 
     let poll = Poll::new()?;
 
@@ -168,16 +168,22 @@ fn main() -> Fallible<()> {
     )?;
 
     // Subscribe for service events
-    let top_srv = topo::Server::connect(Scope::Global)?;
+    let top_srv = topo::connect(Scope::Global)?;
     poll.register(
         &EventedFd(&top_srv),
         TOP_SERVER,
         Ready::readable() | UnixReady::hup(),
         PollOpt::empty(),
     )?;
-    top_srv.subscribe(ServiceRange::with_range(RDM_SRV_TYPE, ..), false, None)?;
-    top_srv.subscribe(ServiceRange::with_range(STREAM_SRV_TYPE, ..), false, None)?;
-    top_srv.subscribe(ServiceRange::with_range(SEQPKT_SRV_TYPE, ..), false, None)?;
+    top_srv
+        .subscribe(ServiceRange::with_range(RDM_SRV_TYPE, ..), false, None)
+        .context("subscribe for RDM server")?;
+    top_srv
+        .subscribe(ServiceRange::with_range(STREAM_SRV_TYPE, ..), false, None)
+        .context("subscribe for STREAM server")?;
+    top_srv
+        .subscribe(ServiceRange::with_range(SEQPKT_SRV_TYPE, ..), false, None)
+        .context("subscribe for SEQPACKET server")?;
 
     let mut events = Events::with_capacity(16);
 
@@ -215,7 +221,7 @@ fn main() -> Fallible<()> {
                     )?;
                 }
                 TOP_SERVER if ready.is_readable() => {
-                    let evt = top_srv.recv()?;
+                    let evt = top_srv.recv().context("reception of service event")?;
 
                     match evt.service.ty() {
                         RDM_SRV_TYPE => {
