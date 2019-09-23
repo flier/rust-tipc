@@ -500,7 +500,21 @@ impl io::Read for Connected<Stream> {
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        self.0.as_ref().recv(buf, Recv::WAIT_ALL).map(|_| ())
+        let expected = buf.len();
+
+        match self.0.as_ref().recv(buf, Recv::WAIT_ALL) {
+            Ok(size) => {
+                if size == expected {
+                    Ok(())
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        format_err!("incomplete read, {} of {}", size, expected),
+                    ))
+                }
+            }
+            Err(err) => Err(err),
+        }
     }
 }
 
