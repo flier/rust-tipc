@@ -1181,6 +1181,12 @@ impl IntoBindAddr for (Type, Instance) {
         ServiceRange::from(self).into()
     }
 }
+impl IntoBindAddr for (Type, Range<Instance>, Visibility) {
+    fn into_bind_addr(self) -> ffi::sockaddr_tipc {
+        let (ty, service_range, visibility) = self;
+        ((ty, service_range).into(), visibility).into_bind_addr()
+    }
+}
 impl IntoBindAddr for (Type, Range<Instance>) {
     fn into_bind_addr(self) -> ffi::sockaddr_tipc {
         ServiceRange::from(self).into()

@@ -6,7 +6,7 @@ use mio::{
     unix::{EventedFd, UnixReady},
     Events, Poll, PollOpt, Ready, Token,
 };
-use tipc::{own_node, topo, Scope, ServiceRange, Type};
+use tipc::{own_node, topo, Scope, Type};
 
 const RDM_SRV_TYPE: Type = 18888;
 const STREAM_SRV_TYPE: Type = 17777;
@@ -31,13 +31,13 @@ fn main() -> Fallible<()> {
         PollOpt::empty(),
     )?;
     top_srv
-        .subscribe(ServiceRange::with_range(RDM_SRV_TYPE, ..), false, None)
+        .subscribe(RDM_SRV_TYPE, false, None, 0)
         .context("subscribe for RDM server")?;
     top_srv
-        .subscribe(ServiceRange::with_range(STREAM_SRV_TYPE, ..), false, None)
+        .subscribe(STREAM_SRV_TYPE, false, None, 0)
         .context("subscribe for STREAM server")?;
     top_srv
-        .subscribe(ServiceRange::with_range(SEQPKT_SRV_TYPE, ..), false, None)
+        .subscribe(SEQPKT_SRV_TYPE, false, None, 0)
         .context("subscribe for SEQPACKET server")?;
 
     // Subscribe for neighbor nodes
@@ -69,26 +69,26 @@ fn main() -> Fallible<()> {
                 TOP_SERVER if ready.is_readable() => {
                     let evt = top_srv.recv().context("reception of service event")?;
 
-                    match evt.service.ty() {
+                    match evt.service().ty() {
                         RDM_SRV_TYPE => {
                             println!(
                                 "Service {} on SOCK_RDM is {}",
-                                evt.service,
-                                if evt.available { "UP" } else { "DOWN" }
+                                evt.service(),
+                                if evt.available() { "UP" } else { "DOWN" }
                             );
                         }
                         STREAM_SRV_TYPE => {
                             println!(
                                 "Service {} on SOCK_STREAM is {}",
-                                evt.service,
-                                if evt.available { "UP" } else { "DOWN" }
+                                evt.service(),
+                                if evt.available() { "UP" } else { "DOWN" }
                             );
                         }
                         SEQPKT_SRV_TYPE => {
                             println!(
                                 "Service {} on SOCK_SEQPACKET is {}",
-                                evt.service,
-                                if evt.available { "UP" } else { "DOWN" }
+                                evt.service(),
+                                if evt.available() { "UP" } else { "DOWN" }
                             );
                         }
                         _ => panic!("unexpected {:?}", evt),

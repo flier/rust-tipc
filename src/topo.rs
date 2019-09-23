@@ -8,6 +8,7 @@ use std::ffi::CStr;
 use std::io;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
+use bitflags::bitflags;
 use failure::Fallible;
 
 use crate::{
@@ -35,18 +36,81 @@ pub fn wait<A: Into<ServiceAddr>>(
 ) -> io::Result<bool> {
     let srv = connect(scope)?;
 
-    srv.subscribe(service.into(), false, expire)?;
+    srv.subscribe(service.into(), false, expire, 0)?;
 
     loop {
         let evt = srv.recv()?;
 
         if let Scope::Node(node) = scope {
-            if node.get() != evt.sock.node() {
+            if node.get() != evt.sock().node() {
                 continue;
             }
         }
 
-        return Ok(evt.available);
+        return Ok(evt.available());
+    }
+}
+
+bitflags! {
+    /// A bit field specifying how the topology service should act on the subscription.
+    pub struct Filter: u32 {
+        /// The subscriber only wants 'edge' events, i.e., a TIPC_PUBLISHED event
+        /// when the first matching binding is encountered,
+        /// and a TIPC_WITHDRAWN event when the last matching binding is removed from the binding table.
+        /// Hence, this event type only informs if there exists any matching binding in the cluster at the moment.
+        const SERVICE = ffi::TIPC_SUB_SERVICE;
+        /// The subscriber wants an event for each matching update of the binding table.
+        ///
+        /// This way, it can keep track of each individual matching service binding that exists in the cluster.
+        const PORTS = ffi::TIPC_SUB_PORTS;
+        /// The subscriber doesn't want any more events for this service range, i.e., the subscription is canceled.
+        ///
+        /// Apart from the 'cancel' bit, this subscription must be a copy of the original subscription request.
+        const CANCEL = ffi::TIPC_SUB_CANCEL;
+    }
+}
+
+#[derive(Debug)]
+pub struct Subscription {
+    /// The service address or range of interest.
+    ///
+    /// If only a single service address is tracked the upper and lower fields are set to be equal.
+    pub service: ServiceRange,
+    /// A value specifying, in milliseconds, the life time of the subscription.
+    ///
+    /// If this field is set to `None` the subscription will never expire (TIPC_WAIT_FOREVER).
+    pub timeout: Option<Duration>,
+    /// A bit field specifying how the topology service should act on the subscription.
+    pub filter: Filter,
+    /// A 64 bit field which is set and used at the subscriber's discretion.
+    pub userdata: u64,
+}
+
+impl From<Subscription> for ffi::tipc_subscr {
+    fn from(sub: Subscription) -> Self {
+        ffi::tipc_subscr {
+            seq: sub.service.into(),
+            timeout: sub
+                .timeout
+                .map_or(ffi::TIPC_WAIT_FOREVER as u32, |t| t.as_millis() as u32),
+            filter: sub.filter.bits(),
+            usr_handle: unsafe { mem::transmute(sub.userdata.to_ne_bytes()) },
+        }
+    }
+}
+
+impl From<ffi::tipc_subscr> for Subscription {
+    fn from(sub: ffi::tipc_subscr) -> Self {
+        Subscription {
+            service: sub.seq.into(),
+            timeout: if sub.timeout == 0 {
+                None
+            } else {
+                Some(Duration::from_millis(sub.timeout as u64))
+            },
+            filter: Filter::from_bits_truncate(sub.filter),
+            userdata: u64::from_ne_bytes(unsafe { mem::transmute(sub.usr_handle) }),
+        }
     }
 }
 
@@ -59,20 +123,18 @@ forward_raw_fd_traits!(Server => Socket);
 impl Server {
     pub fn subscribe<A: Into<ServiceRange>>(
         &self,
-        service_range: A,
+        service: A,
         all: bool,
-        expire: Option<Duration>,
+        timeout: Option<Duration>,
+        userdata: u64,
     ) -> io::Result<()> {
-        let subscr = ffi::tipc_subscr {
-            seq: service_range.into().into(),
-            timeout: expire.map_or(ffi::TIPC_WAIT_FOREVER as u32, |d| d.as_millis() as u32),
-            filter: if all {
-                ffi::TIPC_SUB_PORTS
-            } else {
-                ffi::TIPC_SUB_SERVICE
-            },
-            ..Default::default()
-        };
+        let subscr: ffi::tipc_subscr = Subscription {
+            service: service.into(),
+            timeout,
+            filter: if all { Filter::PORTS } else { Filter::SERVICE },
+            userdata,
+        }
+        .into();
 
         unsafe {
             libc::send(
@@ -114,28 +176,91 @@ impl Server {
 
         let evt = unsafe { evt.assume_init() };
 
-        if evt.event == ffi::TIPC_SUBSCR_TIMEOUT {
-            Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "receive event timed out",
-            ))
-        } else {
-            Ok(Event {
-                service: ServiceAddr::new(evt.s.seq.type_, evt.found_lower),
-                node: evt.port.node,
-                sock: SocketAddr::new(evt.port.ref_, evt.port.node),
-                available: evt.event == ffi::TIPC_PUBLISHED,
-            })
+        match evt.event {
+            ffi::TIPC_SUBSCR_TIMEOUT => {
+                // The subscription expired, as specified by the given timeout value, and has been removed.
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "receive event timed out",
+                ))
+            }
+            ffi::TIPC_PUBLISHED | ffi::TIPC_WITHDRAWN => {
+                let service = ServiceRange::new(evt.s.seq.type_, evt.found_lower, evt.found_upper);
+                let sock = evt.port.into();
+                let subscription = evt.s.into();
+
+                if evt.event == ffi::TIPC_PUBLISHED {
+                    Ok(Event::Published {
+                        service,
+                        sock,
+                        subscription,
+                    })
+                } else {
+                    Ok(Event::Withdrawn {
+                        service,
+                        sock,
+                        subscription,
+                    })
+                }
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("unexpect event: {:?}", evt),
+            )),
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Event {
-    pub service: ServiceAddr,
-    pub node: Instance,
-    pub sock: SocketAddr,
-    pub available: bool,
+pub enum Event {
+    /// A matching binding was found in the binding table.
+    Published {
+        /// Describes the matching binding's range.
+        service: ServiceRange,
+        /// The socket address of the matching socket.
+        sock: SocketAddr,
+        /// The original subscription request.
+        subscription: Subscription,
+    },
+    /// A matching binding was removed from the binding table.
+    Withdrawn {
+        /// Describes the matching binding's range.
+        service: ServiceRange,
+        /// The socket address of the matching socket.
+        sock: SocketAddr,
+        /// The original subscription request.
+        subscription: Subscription,
+    },
+}
+
+impl Event {
+    pub fn available(&self) -> bool {
+        if let Event::Published { .. } = self {
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn service(&self) -> ServiceRange {
+        match self {
+            Event::Published { service, .. } | Event::Withdrawn { service, .. } => *service,
+        }
+    }
+
+    pub fn sock(&self) -> SocketAddr {
+        match self {
+            Event::Published { sock, .. } | Event::Withdrawn { sock, .. } => *sock,
+        }
+    }
+
+    pub fn subscription(&self) -> &Subscription {
+        match self {
+            Event::Published { subscription, .. } | Event::Withdrawn { subscription, .. } => {
+                subscription
+            }
+        }
+    }
 }
 
 pub struct Events<'a>(&'a Server);
@@ -160,7 +285,7 @@ impl<'a> IntoIterator for &'a Server {
 pub fn neighbor_nodes(scope: Scope) -> io::Result<Nodes> {
     let srv = connect(scope)?;
 
-    srv.subscribe(ServiceRange::with_range(ffi::TIPC_CFG_SRV, ..), true, None)?;
+    srv.subscribe(ffi::TIPC_CFG_SRV, true, None, 0)?;
 
     Ok(Nodes(srv))
 }
@@ -174,8 +299,8 @@ pub struct Node {
 impl From<Event> for Node {
     fn from(event: Event) -> Self {
         Node {
-            id: event.node,
-            available: event.available,
+            id: event.sock().node(),
+            available: event.available(),
         }
     }
 }
@@ -203,11 +328,7 @@ impl Nodes {
 pub fn neighbor_links(scope: Scope) -> io::Result<Links> {
     let srv = connect(scope)?;
 
-    srv.subscribe(
-        ServiceRange::with_range(ffi::TIPC_LINK_STATE, ..),
-        true,
-        None,
-    )?;
+    srv.subscribe(ffi::TIPC_LINK_STATE, true, None, 0)?;
 
     Ok(Links(srv))
 }
@@ -223,10 +344,10 @@ pub struct Link {
 impl From<Event> for Link {
     fn from(event: Event) -> Self {
         Link {
-            local: event.sock.port() & 0xFFFF,
-            remote: (event.sock.port() >> 16) & 0xFFFF,
-            neighbor: event.service.instance(),
-            available: event.available,
+            local: event.sock().port() & 0xFFFF,
+            remote: (event.sock().port() >> 16) & 0xFFFF,
+            neighbor: event.service().lower(),
+            available: event.available(),
         }
     }
 }

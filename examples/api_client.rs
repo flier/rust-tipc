@@ -7,9 +7,7 @@ use mio::{
     unix::{EventedFd, UnixReady},
     Events, Poll, PollOpt, Ready, Token,
 };
-use tipc::{
-    topo, Builder, Datagram, Instance, Scope, SeqPacket, ServiceAddr, ServiceRange, Stream, Type,
-};
+use tipc::{topo, Builder, Datagram, Instance, Scope, SeqPacket, ServiceAddr, Stream, Type};
 
 const RDM_SRV_TYPE: Type = 18888;
 const STREAM_SRV_TYPE: Type = 17777;
@@ -176,13 +174,13 @@ fn main() -> Fallible<()> {
         PollOpt::empty(),
     )?;
     top_srv
-        .subscribe(ServiceRange::with_range(RDM_SRV_TYPE, ..), false, None)
+        .subscribe(RDM_SRV_TYPE, false, None, 0)
         .context("subscribe for RDM server")?;
     top_srv
-        .subscribe(ServiceRange::with_range(STREAM_SRV_TYPE, ..), false, None)
+        .subscribe(STREAM_SRV_TYPE, false, None, 0)
         .context("subscribe for STREAM server")?;
     top_srv
-        .subscribe(ServiceRange::with_range(SEQPKT_SRV_TYPE, ..), false, None)
+        .subscribe(SEQPKT_SRV_TYPE, false, None, 0)
         .context("subscribe for SEQPACKET server")?;
 
     let mut events = Events::with_capacity(16);
@@ -223,9 +221,9 @@ fn main() -> Fallible<()> {
                 TOP_SERVER if ready.is_readable() => {
                     let evt = top_srv.recv().context("reception of service event")?;
 
-                    match evt.service.ty() {
+                    match evt.service().ty() {
                         RDM_SRV_TYPE => {
-                            if !evt.available {
+                            if !evt.available() {
                                 println!("Service on SOCK_RDM went down");
                             } else {
                                 let scope = rdm_service_demo(&rdm)?;
@@ -234,14 +232,14 @@ fn main() -> Fallible<()> {
                             }
                         }
                         STREAM_SRV_TYPE => {
-                            if !evt.available {
+                            if !evt.available() {
                                 println!("Service on SOCK_STREAM went down");
                             } else {
                                 stream_service_demo(&stream)?;
                             }
                         }
                         SEQPKT_SRV_TYPE => {
-                            if !evt.available {
+                            if !evt.available() {
                                 println!("Service on SOCK_SEQPACKET went down");
                             } else {
                                 seqpacket_service_demo(&seq_packet)?;
