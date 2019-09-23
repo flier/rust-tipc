@@ -7,7 +7,9 @@ use mio::{
     unix::{EventedFd, UnixReady},
     Events, Poll, PollOpt, Ready, Token,
 };
-use tipc::{self, Builder, Datagram, Listener, SeqPacket, ServiceRange, Stream, Type, Visibility};
+use tipc::{
+    self, Builder, Connected, Datagram, Listener, SeqPacket, ServiceRange, Stream, Type, Visibility,
+};
 
 const RDM_SRV_TYPE: Type = 18888;
 const STREAM_SRV_TYPE: Type = 17777;
@@ -64,7 +66,7 @@ fn recv_rdm_msg(rdm: &Datagram) -> Fallible<()> {
     Ok(())
 }
 
-fn recv_stream_setup(listener: &Listener<Stream>) -> Fallible<Stream> {
+fn recv_stream_setup(listener: &Listener<Stream>) -> Fallible<Connected<Stream>> {
     let mut buf = [0; BUF_SZ];
 
     println!("\n-------------------------------------");
@@ -89,7 +91,7 @@ fn recv_stream_setup(listener: &Listener<Stream>) -> Fallible<Stream> {
     Ok(stream)
 }
 
-fn recv_seqpacket_setup(listener: &Listener<SeqPacket>) -> Fallible<SeqPacket> {
+fn recv_seqpacket_setup(listener: &Listener<SeqPacket>) -> Fallible<Connected<SeqPacket>> {
     let mut buf = [0; BUF_SZ];
 
     println!("\n-------------------------------------");

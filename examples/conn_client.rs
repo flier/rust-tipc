@@ -1,9 +1,9 @@
 use std::net::Shutdown;
 use std::str;
 
-use failure::{Fallible, ResultExt};
+use failure::Fallible;
 
-use tipc::{seq_packet, topo, Builder, Instance, Scope, SeqPacket, ServiceAddr, Type};
+use tipc::{seq_packet, topo, Instance, Scope, SeqPacket, ServiceAddr, Type};
 
 const SERVER_TYPE: Type = 18888;
 const SERVER_INST: Instance = 17;
@@ -19,7 +19,7 @@ fn main() -> Fallible<()> {
 
     println!("Client: connection setup 1 - standard (TCP style) connect");
     {
-        let peer = SeqPacket::connect(server_addr)?;
+        let peer = tipc::connect::<SeqPacket, _>(server_addr)?;
 
         println!("Client: connection established");
 
@@ -48,6 +48,8 @@ fn main() -> Fallible<()> {
         println!("Client: Sent msg: {:?}", msg);
 
         peer.send_to(msg, server_addr)?;
+
+        let peer = peer.into_implied_connected();
 
         let mut buf = [0; BUF_SZ];
         let len = peer.recv(&mut buf[..])?;

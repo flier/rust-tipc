@@ -60,6 +60,12 @@ macro_rules! forward_raw_fd_traits {
                 &self.0
             }
         }
+
+        impl<$tmpl> AsRef<$inner> for $name<$tmpl> {
+            fn as_ref(&self) -> &$inner {
+                &self.0
+            }
+        }
     };
     ($name:ident => $inner:ident) => {
         impl AsRawFd for $name {
@@ -87,36 +93,63 @@ macro_rules! forward_raw_fd_traits {
                 &self.0
             }
         }
+
+        impl AsRef<$inner> for $name {
+            fn as_ref(&self) -> &$inner {
+                &self.0
+            }
+        }
     };
 }
 
-/// Constructs a new `Datagram` with the `AF_TIPC` domain, the `SOCK_RDM` type.
-///
-/// Provides a reliable datagram layer that does not guarantee ordering.
-pub fn rdm() -> io::Result<Datagram> {
-    new(libc::SOCK_RDM).map(Datagram)
+/// Opens a TIPC connection to a remote host.
+pub fn connect<T, A>(addr: A) -> io::Result<Connected<T>>
+where
+    T: From<Builder<T>> + Connectable,
+    A: IntoConnectAddr,
+{
+    T::builder()?.connect(addr)
 }
 
-/// Constructs a new `Stream` with the `AF_TIPC` domain, the `SOCK_STREAM` type.
-///
-/// Provides sequenced, reliable, two-way, connection-based byte streams.
-pub fn stream() -> io::Result<Stream> {
-    new(libc::SOCK_STREAM).map(Stream)
+/// Opens a TIPC connection to a remote host with a timeout.
+pub fn connect_timeout<T, A>(addr: A, timeout: Duration) -> io::Result<Connected<T>>
+where
+    T: From<Builder<T>> + Connectable,
+    A: IntoConnectAddr,
+{
+    let builder = T::builder()?;
+    builder.connect_timeout(timeout)?;
+    builder.connect(addr)
 }
 
-/// Constructs a new `Datagram` with the `AF_TIPC` domain, the `SOCK_DGRAM` type.
-///
-/// Supports datagrams (connectionless, unreliable messages of a fixed maximum length).
-pub fn datagram() -> io::Result<Datagram> {
-    new(libc::SOCK_DGRAM).map(Datagram)
+/// A connectable TIPC socket.
+pub trait Connectable: Buildable {}
+
+impl Connectable for Stream {}
+impl Connectable for SeqPacket {}
+
+/// A buildable TIPC socket.
+pub trait Buildable: Sized {
+    /// Constructs a new `Builder` with the `AF_TIPC` domain.
+    fn builder() -> io::Result<Builder<Self>>;
 }
 
-/// Constructs a new `SeqPacket` with the `AF_TIPC` domain, the `SOCK_SEQPACKET` type.
-///
-/// Provides a sequenced, reliable, two-way connection-based data transmission path for datagrams of fixed maximum length;
-/// a consumer is required to read an entire packet with each input system call.
-pub fn seq_packet() -> io::Result<SeqPacket> {
-    new(libc::SOCK_SEQPACKET).map(SeqPacket)
+impl Buildable for Stream {
+    fn builder() -> io::Result<Builder<Self>> {
+        Builder::stream()
+    }
+}
+
+impl Buildable for SeqPacket {
+    fn builder() -> io::Result<Builder<Self>> {
+        Builder::seq_packet()
+    }
+}
+
+impl Buildable for Datagram {
+    fn builder() -> io::Result<Builder<Self>> {
+        Builder::datagram()
+    }
 }
 
 /// An "in progress" TIPC socket which has not yet been connected or listened.
@@ -237,12 +270,12 @@ impl<T> Builder<T> {
     ///
     /// Connects this TIPC socket to a remote address, allowing the `send` and `recv` syscalls to be used to send data
     /// and also applies filters to only receive data from the specified address.
-    pub fn connect<A>(self, addr: A) -> io::Result<T>
+    pub fn connect<A>(self, addr: A) -> io::Result<Connected<T>>
     where
         A: IntoConnectAddr,
         T: From<Builder<T>>,
     {
-        self.0.connect(addr).map(|_: ()| self.into())
+        self.0.connect(addr).map(|_: ()| Connected(T::from(self)))
     }
 
     /// Returns the address of the local half of this TIPC socket.
@@ -308,7 +341,7 @@ impl<T> Listener<T> {
     }
 
     /// Accept a new incoming connection from this listener.
-    pub fn accept(&self) -> io::Result<(T, SocketAddr)>
+    pub fn accept(&self) -> io::Result<(Connected<T>, SocketAddr)>
     where
         T: FromRawFd,
     {
@@ -318,7 +351,12 @@ impl<T> Listener<T> {
         unsafe {
             libc::accept(self.0.as_raw_fd(), sa.as_mut_ptr() as *mut _, &mut len)
                 .into_result()
-                .map(|sd| (T::from_raw_fd(sd), sa.assume_init().addr.id.into()))
+                .map(|sd| {
+                    (
+                        Connected(T::from_raw_fd(sd)),
+                        sa.assume_init().addr.id.into(),
+                    )
+                })
         }
     }
 
@@ -342,10 +380,43 @@ impl<'a, T> Iterator for Incoming<'a, T>
 where
     T: FromRawFd,
 {
-    type Item = io::Result<T>;
+    type Item = io::Result<Connected<T>>;
 
-    fn next(&mut self) -> Option<io::Result<T>> {
+    fn next(&mut self) -> Option<io::Result<Connected<T>>> {
         Some(self.listener.accept().map(|p| p.0))
+    }
+}
+
+/// A connected socket is directly connected to another socket creating a point to point connection between TIPC sockets.
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct Connected<T>(T);
+
+impl<T> Deref for Connected<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> Connected<T>
+where
+    T: AsRef<Socket>,
+{
+    /// Receives data from the socket.
+    ///
+    /// On success, returns the number of bytes read.
+    pub fn recv<B: AsMut<[u8]>>(&self, buf: B) -> io::Result<usize> {
+        self.0.as_ref().recv(buf, false)
+    }
+
+    /// Sends data on the socket to the remote address to which it is connected.
+    ///
+    /// The `connect` method will connect this socket to a remote address.
+    /// This method will fail if the socket is not connected.
+    pub fn send<B: AsRef<[u8]>>(&self, buf: B) -> io::Result<usize> {
+        self.0.as_ref().send(buf)
     }
 }
 
@@ -357,23 +428,10 @@ pub struct Stream(Socket);
 forward_raw_fd_traits!(Stream => Socket);
 
 impl Stream {
-    /// Constructs a new `Builder` with the `AF_TIPC` domain, the `SOCK_STREAM` type.
-    ///
-    /// Provides sequenced, reliable, two-way, connection-based byte streams.
-    pub fn builder() -> io::Result<Builder<Stream>> {
-        Builder::stream()
-    }
-
     /// Opens a TIPC connection to a remote host.
-    pub fn connect<A: IntoConnectAddr>(addr: A) -> io::Result<Self> {
-        Self::builder()?.connect(addr)
-    }
-
-    /// Opens a TIPC connection to a remote host with a timeout.
-    pub fn connect_timeout<A: IntoConnectAddr>(addr: A, timeout: Duration) -> io::Result<Self> {
-        let builder = Self::builder()?;
-        builder.connect_timeout(timeout)?;
-        builder.connect(addr)
+    pub fn connect<A: IntoConnectAddr>(self, addr: A) -> io::Result<Connected<Self>> {
+        self.0.connect(addr)?;
+        Ok(Connected(self))
     }
 
     /// Shut down the read, write, or both halves of this connection.
@@ -397,19 +455,19 @@ impl Stream {
     }
 }
 
-impl io::Read for Stream {
+impl io::Read for Connected<Stream> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.0.recv(buf, false)
+        self.0.as_ref().recv(buf, false)
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        self.0.recv(buf, true).map(|_| ())
+        self.0.as_ref().recv(buf, true).map(|_| ())
     }
 }
 
-impl io::Write for Stream {
+impl io::Write for Connected<Stream> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.send(buf)
+        self.0.as_ref().send(buf)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -426,24 +484,15 @@ pub struct SeqPacket(Socket);
 forward_raw_fd_traits!(SeqPacket => Socket);
 
 impl SeqPacket {
-    /// Constructs a new `Builder` with the `AF_TIPC` domain, the `SOCK_SEQPACKET` type.
-    ///
-    /// Provides a sequenced, reliable, two-way connection-based data transmission path for datagrams of fixed maximum length;
-    /// a consumer is required to read an entire packet with each input system call.
-    pub fn builder() -> io::Result<Builder<SeqPacket>> {
-        Builder::seq_packet()
-    }
-
     /// Opens a TIPC connection to a remote host.
-    pub fn connect<A: IntoConnectAddr>(addr: A) -> io::Result<Self> {
-        Self::builder()?.connect(addr)
+    pub fn connect<A: IntoConnectAddr>(self, addr: A) -> io::Result<Connected<Self>> {
+        self.0.connect(addr)?;
+        Ok(Connected(self))
     }
 
-    /// Opens a TIPC connection to a remote host with a timeout.
-    pub fn connect_timeout<A: IntoConnectAddr>(addr: A, timeout: Duration) -> io::Result<Self> {
-        let builder = Self::builder()?;
-        builder.connect_timeout(timeout)?;
-        builder.connect(addr)
+    /// Into a implied connected socket.
+    pub fn into_implied_connected(self) -> Connected<Self> {
+        Connected(self)
     }
 
     /// Shut down the read, write, or both halves of this connection.
@@ -468,24 +517,9 @@ impl SeqPacket {
 
     /// Receives data from the socket.
     ///
-    /// On success, returns the number of bytes read.
-    pub fn recv<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<usize> {
-        self.0.recv(buf, false)
-    }
-
-    /// Receives data from the socket.
-    ///
     /// On success, returns the number of bytes read and the address from whence the data came.
     pub fn recv_from<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<(usize, SocketAddr)> {
         self.0.recv_from(buf)
-    }
-
-    /// Sends data on the socket to the remote address to which it is connected.
-    ///
-    /// The `connect` method will connect this socket to a remote address.
-    /// This method will fail if the socket is not connected.
-    pub fn send<T: AsRef<[u8]>>(&self, buf: T) -> io::Result<usize> {
-        self.0.send(buf)
     }
 
     /// Sends data on the socket to the given address. On success, returns the number of bytes written.
@@ -509,14 +543,6 @@ impl Datagram {
         Builder::datagram()
     }
 
-    /// Initiate a connection on this socket to the specified address.
-    ///
-    /// Connects this TIPC socket to a remote address, allowing the `send` and `recv` syscalls to be used to send data
-    /// and also applies filters to only receive data from the specified address.
-    pub fn connect<A: IntoConnectAddr>(&self, addr: A) -> io::Result<()> {
-        self.0.connect(addr)
-    }
-
     /// Moves this stream into or out of nonblocking mode.
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.0.set_nonblocking(nonblocking)
@@ -538,24 +564,9 @@ impl Datagram {
 
     /// Receives data from the socket.
     ///
-    /// On success, returns the number of bytes read.
-    pub fn recv<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<usize> {
-        self.0.recv(buf, false)
-    }
-
-    /// Receives data from the socket.
-    ///
     /// On success, returns the number of bytes read and the address from whence the data came.
     pub fn recv_from<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<(usize, SocketAddr)> {
         self.0.recv_from(buf)
-    }
-
-    /// Sends data on the socket to the remote address to which it is connected.
-    ///
-    /// The `connect` method will connect this socket to a remote address.
-    /// This method will fail if the socket is not connected.
-    pub fn send<T: AsRef<[u8]>>(&self, buf: T) -> io::Result<usize> {
-        self.0.send(buf)
     }
 
     /// Sends data on the socket to the given address. On success, returns the number of bytes written.
@@ -610,6 +621,36 @@ impl Deref for Socket {
     }
 }
 
+/// Constructs a new `Datagram` with the `AF_TIPC` domain, the `SOCK_RDM` type.
+///
+/// Provides a reliable datagram layer that does not guarantee ordering.
+pub fn rdm() -> io::Result<Datagram> {
+    new(libc::SOCK_RDM).map(Datagram)
+}
+
+/// Constructs a new `Stream` with the `AF_TIPC` domain, the `SOCK_STREAM` type.
+///
+/// Provides sequenced, reliable, two-way, connection-based byte streams.
+pub fn stream() -> io::Result<Stream> {
+    new(libc::SOCK_STREAM).map(Stream)
+}
+
+/// Constructs a new `Datagram` with the `AF_TIPC` domain, the `SOCK_DGRAM` type.
+///
+/// Supports datagrams (connectionless, unreliable messages of a fixed maximum length).
+pub fn datagram() -> io::Result<Datagram> {
+    new(libc::SOCK_DGRAM).map(Datagram)
+}
+
+/// Constructs a new `SeqPacket` with the `AF_TIPC` domain, the `SOCK_SEQPACKET` type.
+///
+/// Provides a sequenced, reliable, two-way connection-based data transmission path for datagrams of fixed maximum length;
+/// a consumer is required to read an entire packet with each input system call.
+pub fn seq_packet() -> io::Result<SeqPacket> {
+    new(libc::SOCK_SEQPACKET).map(SeqPacket)
+}
+
+/// Constructs a new `Socket` with the `AF_TIPC` domain.
 pub fn new(sock_type: i32) -> io::Result<Socket> {
     unsafe { libc::socket(libc::AF_TIPC, sock_type, 0) }
         .into_result()

@@ -2,7 +2,7 @@ use std::io::{self, prelude::*};
 use std::str;
 use std::time::Duration;
 
-use failure::Fallible;
+use failure::{Fallible, ResultExt};
 use mio::{
     unix::{EventedFd, UnixReady},
     Events, Poll, PollOpt, Ready, Token,
