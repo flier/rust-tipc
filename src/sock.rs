@@ -12,6 +12,7 @@ use std::io;
 use std::net::Shutdown;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
+use bitflags::bitflags;
 use failure::{format_err, Error, Fail};
 
 use crate::{
@@ -306,12 +307,12 @@ where
     }
 
     /// Binds this socket to the specified address.
-    pub fn bind<A: IntoBindAddr>(&self, addr: A) -> io::Result<&Self> {
+    pub fn bind<A: IntoBindAddr>(self, addr: A) -> io::Result<Self> {
         self.0.as_ref().bind(addr).map(|_: ()| self)
     }
 
     /// Unbinds this socket from the specified address.
-    pub fn unbind<A: Into<ServiceRange>>(&self, service_range: A) -> io::Result<&Self> {
+    pub fn unbind<A: Into<ServiceRange>>(self, service_range: A) -> io::Result<Self> {
         self.0.as_ref().unbind(service_range).map(|_: ()| self)
     }
 
@@ -422,7 +423,16 @@ where
     ///
     /// On success, returns the number of bytes read.
     pub fn recv<B: AsMut<[u8]>>(&self, buf: B) -> io::Result<usize> {
-        self.0.as_ref().recv(buf, false)
+        self.0.as_ref().recv(buf, Recv::empty())
+    }
+
+    /// Receives data on the socket from the remote address to which it is connected,
+    /// without removing that data from the queue.
+    ///
+    /// On success, returns the number of bytes peeked. Successive calls return the same data.
+    /// This is accomplished by passing `MSG_PEEK` as a flag to the underlying `recv` system call.
+    pub fn peek<B: AsMut<[u8]>>(&self, buf: B) -> io::Result<usize> {
+        self.0.as_ref().recv(buf, Recv::PEEK)
     }
 
     /// Sends data on the socket to the remote address to which it is connected.
@@ -486,11 +496,11 @@ impl Stream {
 
 impl io::Read for Connected<Stream> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.0.as_ref().recv(buf, false)
+        self.0.as_ref().recv(buf, Recv::empty())
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        self.0.as_ref().recv(buf, true).map(|_| ())
+        self.0.as_ref().recv(buf, Recv::WAIT_ALL).map(|_| ())
     }
 }
 
@@ -901,7 +911,7 @@ impl Socket {
     /// Receives data from the socket.
     ///
     /// On success, returns the number of bytes read.
-    fn recv<T: AsMut<[u8]>>(&self, mut buf: T, all: bool) -> io::Result<usize> {
+    fn recv<T: AsMut<[u8]>>(&self, mut buf: T, flags: Recv) -> io::Result<usize> {
         let buf = buf.as_mut();
 
         unsafe {
@@ -909,7 +919,7 @@ impl Socket {
                 self.as_raw_fd(),
                 buf.as_mut_ptr() as *mut _,
                 buf.len(),
-                if all { libc::MSG_WAITALL } else { 0 },
+                flags.bits(),
             )
         }
         .into_result()
@@ -920,8 +930,8 @@ impl Socket {
     /// On success, returns the number of bytes read and the address from whence the data came.
     fn recv_from<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<(usize, SocketAddr)> {
         match self.recv_msg(buf)? {
-            (Recv::Message(len), addr) => Ok((len, addr)),
-            (Recv::Rejected(err), _) => Err(io::Error::new(
+            (RecvMsg::Message(len), addr) => Ok((len, addr)),
+            (RecvMsg::Rejected(err), _) => Err(io::Error::new(
                 io::ErrorKind::Other,
                 Error::from(Rejected(err)),
             )),
@@ -932,7 +942,7 @@ impl Socket {
         }
     }
 
-    fn recv_msg<T: AsMut<[u8]>>(&self, mut buf: T) -> io::Result<(Recv, SocketAddr)> {
+    fn recv_msg<T: AsMut<[u8]>>(&self, mut buf: T) -> io::Result<(RecvMsg, SocketAddr)> {
         let buf = buf.as_mut();
         let mut addr = MaybeUninit::<[ffi::sockaddr_tipc; 2]>::zeroed();
         let addr_len = mem::size_of::<[ffi::sockaddr_tipc; 2]>() as u32;
@@ -971,9 +981,9 @@ impl Socket {
                 Err(io::Error::new(io::ErrorKind::Other, "unexpected OOB data"))
             } else {
                 let event = if (msg.msg_flags & libc::MSG_EOR) == libc::MSG_EOR {
-                    Recv::GroupDown(member_id.unwrap())
+                    RecvMsg::GroupDown(member_id.unwrap())
                 } else {
-                    Recv::GroupUp(member_id.unwrap())
+                    RecvMsg::GroupUp(member_id.unwrap())
                 };
 
                 Ok((event, sock_id))
@@ -1025,11 +1035,19 @@ impl Socket {
             }
 
             if let Some(err) = err {
-                Ok((Recv::Rejected(err), self.local_addr()?))
+                Ok((RecvMsg::Rejected(err), self.local_addr()?))
             } else {
-                Ok((Recv::Message(rc), sock_id))
+                Ok((RecvMsg::Message(rc), sock_id))
             }
         }
+    }
+}
+
+bitflags! {
+    struct Recv: i32 {
+        const PEEK = libc::MSG_PEEK;
+        const WAIT_ALL = libc::MSG_WAITALL;
+        const DONT_WAIT = libc::MSG_DONTWAIT;
     }
 }
 
@@ -1056,8 +1074,9 @@ unsafe fn cmsgs(msg: &libc::msghdr) -> impl Iterator<Item = (libc::c_int, libc::
     })
 }
 
-/// Into a local address to bind.
+/// Conversion into a local address to bind.
 pub trait IntoBindAddr {
+    /// Creates a `ffi::sockaddr_tipc` from the address.
     fn into_bind_addr(self) -> ffi::sockaddr_tipc;
 }
 
@@ -1094,8 +1113,9 @@ impl IntoBindAddr for Type {
     }
 }
 
-/// Into a remote address to connect.
+/// Conversion into a remote address to connect.
 pub trait IntoConnectAddr {
+    /// Creates a `ffi::sockaddr_tipc` from the address.
     fn into_connect_addr(self) -> ffi::sockaddr_tipc;
 }
 
@@ -1117,8 +1137,9 @@ impl IntoConnectAddr for (Type, Instance) {
     }
 }
 
-/// Into a remote address to sends data to.
+/// Conversion into a remote address to sends data to.
 pub trait IntoSendToAddr {
+    /// Creates a `ffi::sockaddr_tipc` from the address.
     fn into_send_to_addr(self) -> ffi::sockaddr_tipc;
 }
 
@@ -1143,7 +1164,7 @@ impl IntoSendToAddr for (ServiceAddr, Scope) {
 }
 
 #[derive(Clone, Debug)]
-pub enum Recv {
+pub enum RecvMsg {
     GroupUp(ServiceAddr),
     GroupDown(ServiceAddr),
     Message(usize),

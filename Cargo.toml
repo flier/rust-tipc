@@ -12,6 +12,7 @@ doc = []
 
 [dependencies]
 failure = "0.1"
+bitflags = "1.1"
 libc = "0.2"
 
 [dev-dependencies]
