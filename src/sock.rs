@@ -530,7 +530,7 @@ impl SeqPacket {
     }
 
     /// Into a implied connected socket.
-    pub fn into_implied_connected(self) -> Connected<Self> {
+    pub fn into_connected(self) -> Connected<Self> {
         Connected(self)
     }
 
@@ -582,13 +582,26 @@ impl Datagram {
         Builder::datagram()
     }
 
+    /// Binds this socket to the specified address.
+    pub fn bind<A>(self, addr: A) -> io::Result<Bound<Datagram>>
+    where
+        A: IntoBindAddr,
+    {
+        self.0.bind(addr).map(|_: ()| Bound(self))
+    }
+
+    /// Into a implied connected socket.
+    pub fn into_connected(self) -> Connected<Self> {
+        Connected(self)
+    }
+
     /// Moves this stream into or out of nonblocking mode.
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.0.set_nonblocking(nonblocking)
     }
 
-    pub fn set_rejectable(&self) -> io::Result<()> {
-        self.0.set_rejectable()
+    pub fn set_rejectable(&self, rejectable: bool) -> io::Result<()> {
+        self.0.set_rejectable(rejectable)
     }
 
     /// Returns the address of the local half of this TIPC socket.
@@ -733,8 +746,11 @@ impl Socket {
         self.set_sock_opt(ffi::TIPC_CONN_TIMEOUT, timeout.as_millis() as u32)
     }
 
-    pub fn set_rejectable(&self) -> io::Result<()> {
-        self.set_sock_opt(ffi::TIPC_DEST_DROPPABLE, FALSE)
+    pub fn set_rejectable(&self, rejectable: bool) -> io::Result<()> {
+        self.set_sock_opt(
+            ffi::TIPC_DEST_DROPPABLE,
+            if rejectable { TRUE } else { FALSE },
+        )
     }
 
     /// Get the current value of a socket option.
@@ -1122,6 +1138,11 @@ pub trait IntoBindAddr {
     fn into_bind_addr(self) -> ffi::sockaddr_tipc;
 }
 
+impl IntoBindAddr for ServiceAddr {
+    fn into_bind_addr(self) -> ffi::sockaddr_tipc {
+        (self.into(), Visibility::Cluster).into_bind_addr()
+    }
+}
 impl IntoBindAddr for ServiceRange {
     fn into_bind_addr(self) -> ffi::sockaddr_tipc {
         (self, Visibility::Cluster).into_bind_addr()

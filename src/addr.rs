@@ -40,7 +40,7 @@ macro_rules! addr {
 
         impl $name {
             /// Construct a new address
-            pub fn new( $( $prop : $ty ),* ) -> Self {
+            pub const fn new( $( $prop : $ty ),* ) -> Self {
                 $name( ffi::$raw { $( $field : $prop ),* })
             }
 

@@ -34,7 +34,7 @@ fn rdm_service_demo(datagram: &Datagram) -> Fallible<Scope> {
     println!("Sending msg: `{}` on SOCK_RDM", msg);
     println!("               -->{}", srv);
 
-    datagram.set_rejectable()?;
+    datagram.set_rejectable(false)?;
     datagram.send_to(msg, srv)?;
 
     let mut buf = [0; BUF_SZ];

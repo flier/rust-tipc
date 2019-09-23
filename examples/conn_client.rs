@@ -49,7 +49,7 @@ fn main() -> Fallible<()> {
 
         peer.send_to(msg, server_addr)?;
 
-        let peer = peer.into_implied_connected();
+        let peer = peer.into_connected();
 
         let mut buf = [0; BUF_SZ];
         let len = peer.recv(&mut buf[..])?;
