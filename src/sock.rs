@@ -440,7 +440,7 @@ where
     /// The `connect` method will connect this socket to a remote address.
     /// This method will fail if the socket is not connected.
     pub fn send<B: AsRef<[u8]>>(&self, buf: B) -> io::Result<usize> {
-        self.0.as_ref().send(buf)
+        self.0.as_ref().send(buf, Send::empty())
     }
 
     /// Get the socket address of the peer socket.
@@ -506,7 +506,7 @@ impl io::Read for Connected<Stream> {
 
 impl io::Write for Connected<Stream> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.as_ref().send(buf)
+        self.0.as_ref().send(buf, Send::empty())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -558,12 +558,12 @@ impl SeqPacket {
     ///
     /// On success, returns the number of bytes read and the address from whence the data came.
     pub fn recv_from<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<(usize, SocketAddr)> {
-        self.0.recv_from(buf)
+        self.0.recv_from(buf, Recv::empty())
     }
 
     /// Sends data on the socket to the given address. On success, returns the number of bytes written.
     pub fn send_to<T: AsRef<[u8]>, A: IntoSendToAddr>(&self, buf: T, dst: A) -> io::Result<usize> {
-        self.0.send_to(buf, dst)
+        self.0.send_to(buf, dst, Send::empty())
     }
 }
 
@@ -605,12 +605,12 @@ impl Datagram {
     ///
     /// On success, returns the number of bytes read and the address from whence the data came.
     pub fn recv_from<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<(usize, SocketAddr)> {
-        self.0.recv_from(buf)
+        self.0.recv_from(buf, Recv::empty())
     }
 
     /// Sends data on the socket to the given address. On success, returns the number of bytes written.
     pub fn send_to<T: AsRef<[u8]>, A: IntoSendToAddr>(&self, buf: T, dst: A) -> io::Result<usize> {
-        self.0.send_to(buf, dst)
+        self.0.send_to(buf, dst, Send::empty())
     }
 }
 
@@ -782,7 +782,7 @@ impl Socket {
     }
 
     /// Creates a new independently owned handle to the underlying socket.
-    fn try_clone(&self) -> io::Result<Self> {
+    pub fn try_clone(&self) -> io::Result<Self> {
         unsafe { libc::dup(self.as_raw_fd()) }
             .into_result()
             .map(Self)
@@ -819,7 +819,7 @@ impl Socket {
     }
 
     /// Mark a socket as ready to accept incoming connection requests using accept()
-    fn listen(&self) -> io::Result<()> {
+    pub fn listen(&self) -> io::Result<()> {
         unsafe { libc::listen(self.as_raw_fd(), 0) }.into_result()
     }
 
@@ -841,7 +841,7 @@ impl Socket {
     }
 
     /// Shut down the read, write, or both halves of this connection.
-    fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         unsafe {
             libc::shutdown(
                 self.as_raw_fd(),
@@ -859,24 +859,36 @@ impl Socket {
     ///
     /// The `connect` method will connect this socket to a remote address.
     /// This method will fail if the socket is not connected.
-    fn send<T: AsRef<[u8]>>(&self, buf: T) -> io::Result<usize> {
+    pub fn send<T: AsRef<[u8]>>(&self, buf: T, flags: Send) -> io::Result<usize> {
         let buf = buf.as_ref();
 
-        unsafe { libc::send(self.as_raw_fd(), buf.as_ptr() as *const _, buf.len(), 0) }
-            .into_result()
+        unsafe {
+            libc::send(
+                self.as_raw_fd(),
+                buf.as_ptr() as *const _,
+                buf.len(),
+                flags.bits(),
+            )
+        }
+        .into_result()
     }
 
     /// Sends data on the socket to the given address. On success, returns the number of bytes written.
-    fn send_to<T: AsRef<[u8]>, A: IntoSendToAddr>(&self, buf: T, dst: A) -> io::Result<usize> {
+    pub fn send_to<T: AsRef<[u8]>, A: IntoSendToAddr>(
+        &self,
+        buf: T,
+        addr: A,
+        flags: Send,
+    ) -> io::Result<usize> {
         let buf = buf.as_ref();
-        let sa: ffi::sockaddr_tipc = dst.into_send_to_addr();
+        let sa: ffi::sockaddr_tipc = addr.into_send_to_addr();
 
         unsafe {
             libc::sendto(
                 self.as_raw_fd(),
                 buf.as_ptr() as *const _,
                 buf.len(),
-                0,
+                flags.bits(),
                 &sa as *const _ as *const _,
                 mem::size_of::<ffi::sockaddr_tipc>() as u32,
             )
@@ -884,23 +896,23 @@ impl Socket {
         .into_result()
     }
 
-    fn mcast<T, A>(&self, buf: T, dst: A, visibility: Visibility) -> io::Result<usize>
+    /// Sends a multicast message to all matching sockets.
+    pub fn mcast<T, A>(&self, buf: T, addr: A, flags: Send) -> io::Result<usize>
     where
         T: AsRef<[u8]>,
-        A: Into<ServiceAddr>,
+        A: IntoSendToAddr,
     {
         let buf = buf.as_ref();
-        let mut sa: ffi::sockaddr_tipc = ServiceRange::from(dst.into()).into();
+        let mut sa: ffi::sockaddr_tipc = addr.into_send_to_addr();
 
         sa.addrtype = TIPC_ADDR_MCAST as u8;
-        sa.scope = visibility as i8;
 
         unsafe {
             libc::sendto(
                 self.as_raw_fd(),
                 buf.as_ptr() as *const _,
                 buf.len(),
-                0,
+                flags.bits(),
                 &sa as *const _ as *const _,
                 mem::size_of::<ffi::sockaddr_tipc>() as u32,
             )
@@ -911,7 +923,7 @@ impl Socket {
     /// Receives data from the socket.
     ///
     /// On success, returns the number of bytes read.
-    fn recv<T: AsMut<[u8]>>(&self, mut buf: T, flags: Recv) -> io::Result<usize> {
+    pub fn recv<T: AsMut<[u8]>>(&self, mut buf: T, flags: Recv) -> io::Result<usize> {
         let buf = buf.as_mut();
 
         unsafe {
@@ -928,8 +940,12 @@ impl Socket {
     /// Receives data from the socket.
     ///
     /// On success, returns the number of bytes read and the address from whence the data came.
-    fn recv_from<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<(usize, SocketAddr)> {
-        match self.recv_msg(buf)? {
+    pub fn recv_from<T: AsMut<[u8]>>(
+        &self,
+        buf: T,
+        flags: Recv,
+    ) -> io::Result<(usize, SocketAddr)> {
+        match self.recv_msg(buf, flags)? {
             (RecvMsg::Message(len), addr) => Ok((len, addr)),
             (RecvMsg::Rejected(err), _) => Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -942,7 +958,11 @@ impl Socket {
         }
     }
 
-    fn recv_msg<T: AsMut<[u8]>>(&self, mut buf: T) -> io::Result<(RecvMsg, SocketAddr)> {
+    pub fn recv_msg<T: AsMut<[u8]>>(
+        &self,
+        mut buf: T,
+        flags: Recv,
+    ) -> io::Result<(RecvMsg, SocketAddr)> {
         let buf = buf.as_mut();
         let mut addr = MaybeUninit::<[ffi::sockaddr_tipc; 2]>::zeroed();
         let addr_len = mem::size_of::<[ffi::sockaddr_tipc; 2]>() as u32;
@@ -963,7 +983,8 @@ impl Socket {
         msg.msg_control = anc_space.as_mut_ptr() as *mut _;
         msg.msg_controllen = anc_space.len();
 
-        let rc = unsafe { libc::recvmsg(self.as_raw_fd(), &mut msg, 0) }.into_result()?;
+        let rc =
+            unsafe { libc::recvmsg(self.as_raw_fd(), &mut msg, flags.bits()) }.into_result()?;
 
         let addr = unsafe { addr.assume_init() };
 
@@ -1044,9 +1065,30 @@ impl Socket {
 }
 
 bitflags! {
-    struct Recv: i32 {
+    /// Flags for `recv`.
+    pub struct Recv: i32 {
+        /// This flag causes the receive operation to return data from the beginning of the receive queue
+        /// without removing that data from the queue.
+        ///
+        /// Thus, a subsequent receive call will return the same data.
         const PEEK = libc::MSG_PEEK;
+        /// This flag requests that the operation block until the full request is satisfied.
+        ///
+        /// However, the call may still return less data than requested if a signal is caught,
+        /// an error or disconnect occurs, or the next data to be received is of a different type than that returned.
+        /// This flag has no effect for datagram sockets.
         const WAIT_ALL = libc::MSG_WAITALL;
+        /// Enables nonblocking operation;
+        /// if the operation would block, the call fails with the error `EAGAIN` or `EWOULDBLOCK`.
+        const DONT_WAIT = libc::MSG_DONTWAIT;
+    }
+}
+
+bitflags! {
+    /// Flags for `send`.
+    pub struct Send: i32 {
+        /// Enables nonblocking operation;
+        /// if the operation would block, `EAGAIN` or `EWOULDBLOCK` is returned.
         const DONT_WAIT = libc::MSG_DONTWAIT;
     }
 }
@@ -1087,14 +1129,16 @@ impl IntoBindAddr for ServiceRange {
 }
 impl IntoBindAddr for (ServiceRange, Visibility) {
     fn into_bind_addr(self) -> ffi::sockaddr_tipc {
-        let mut sa: ffi::sockaddr_tipc = self.0.into();
-        sa.scope = self.1 as i8;
+        let (service_range, visibility) = self;
+        let mut sa: ffi::sockaddr_tipc = service_range.into();
+        sa.scope = visibility as i8;
         sa
     }
 }
 impl IntoBindAddr for (Type, Instance, Visibility) {
     fn into_bind_addr(self) -> ffi::sockaddr_tipc {
-        ((self.0, self.1).into(), self.2).into_bind_addr()
+        let (ty, instance, visibility) = self;
+        ((ty, instance).into(), visibility).into_bind_addr()
     }
 }
 impl IntoBindAddr for (Type, Instance) {
@@ -1126,8 +1170,9 @@ impl IntoConnectAddr for ServiceAddr {
 }
 impl IntoConnectAddr for (ServiceAddr, Scope) {
     fn into_connect_addr(self) -> ffi::sockaddr_tipc {
-        let mut sa: ffi::sockaddr_tipc = self.0.into();
-        sa.addr.name.domain = self.1.into();
+        let (addr, scope) = self;
+        let mut sa: ffi::sockaddr_tipc = addr.into();
+        sa.addr.name.domain = scope.into();
         sa
     }
 }
@@ -1138,6 +1183,10 @@ impl IntoConnectAddr for (Type, Instance) {
 }
 
 /// Conversion into a remote address to sends data to.
+///
+/// * If the destination is a socket address the message is unicast to that specific socket.
+/// * If the destination is a service address, it is an anycast to any matching destination.
+/// * If the destination is a service range, the message is a multicast to all matching sockets.
 pub trait IntoSendToAddr {
     /// Creates a `ffi::sockaddr_tipc` from the address.
     fn into_send_to_addr(self) -> ffi::sockaddr_tipc;
@@ -1157,8 +1206,9 @@ impl IntoSendToAddr for ServiceAddr {
 }
 impl IntoSendToAddr for (ServiceAddr, Scope) {
     fn into_send_to_addr(self) -> ffi::sockaddr_tipc {
-        let mut sa: ffi::sockaddr_tipc = self.0.into();
-        sa.addr.name.domain = self.1.into();
+        let (addr, scope) = self;
+        let mut sa: ffi::sockaddr_tipc = addr.into();
+        sa.addr.name.domain = scope.into();
         sa
     }
 }
