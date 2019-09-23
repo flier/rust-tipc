@@ -2,7 +2,7 @@ use std::str;
 
 use failure::Fallible;
 
-use tipc::{Builder, Instance, Type, Visibility::*};
+use tipc::{Instance, SeqPacket, Type, Visibility::*};
 
 const SERVER_TYPE: Type = 18888;
 const SERVER_INST: Instance = 17;
@@ -12,11 +12,7 @@ const BUF_SZ: usize = 40;
 fn main() -> Fallible<()> {
     println!("****** TIPC connection demo server started ******");
 
-    let builder = Builder::seq_packet()?;
-
-    builder.bind((SERVER_TYPE, SERVER_INST), Zone)?;
-
-    let listener = builder.listen(4)?;
+    let listener = tipc::bind::<SeqPacket, _>((SERVER_TYPE, SERVER_INST, Zone))?.listen()?;
 
     let _ = crossbeam::scope(|s| {
         for (id, peer) in listener.incoming().enumerate() {

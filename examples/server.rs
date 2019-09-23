@@ -8,7 +8,8 @@ use mio::{
     Events, Poll, PollOpt, Ready, Token,
 };
 use tipc::{
-    self, Builder, Connected, Datagram, Listener, SeqPacket, ServiceRange, Stream, Type, Visibility,
+    self, Bindable, Bound, Builder, Connected, Datagram, Listener, SeqPacket, ServiceRange, Stream,
+    Type,
 };
 
 const RDM_SRV_TYPE: Type = 18888;
@@ -16,17 +17,16 @@ const STREAM_SRV_TYPE: Type = 17777;
 const SEQPKT_SRV_TYPE: Type = 16666;
 
 const BUF_SZ: usize = 40;
-const BACKLOG: i32 = 32;
 
 const STREAM: Token = Token(0);
 const SEQ_PACKET: Token = Token(1);
 
-fn bind_service<T>(builder: Builder<T>, ty: Type, name: &str) -> Fallible<Builder<T>>
+fn bind_service<T>(builder: Builder<T>, ty: Type, name: &str) -> Fallible<Bound<T>>
 where
-    T: From<Builder<T>>,
+    T: Bindable,
 {
-    let addr = ServiceRange::with_range(ty, ..);
-    let s = builder.bind(addr, Visibility::Cluster)?;
+    let addr = ServiceRange::from(ty);
+    let s = builder.bind(addr)?;
 
     println!(
         "Bound {} socket {} to {}",
@@ -35,7 +35,7 @@ where
         addr
     );
 
-    Ok(builder)
+    Ok(s)
 }
 
 fn recv_rdm_msg(rdm: &Datagram) -> Fallible<()> {
@@ -121,9 +121,9 @@ fn main() -> Fallible<()> {
 
     let rdm: Datagram = bind_service(Builder::rdm()?, RDM_SRV_TYPE, "RDM")?.into();
     let stream_lisener: Listener<Stream> =
-        bind_service(Builder::stream()?, STREAM_SRV_TYPE, "STREAM")?.listen(BACKLOG)?;
+        bind_service(Builder::stream()?, STREAM_SRV_TYPE, "STREAM")?.listen()?;
     let seq_packet_lisener: Listener<SeqPacket> =
-        bind_service(Builder::seq_packet()?, SEQPKT_SRV_TYPE, "SEQPACKET")?.listen(BACKLOG)?;
+        bind_service(Builder::seq_packet()?, SEQPKT_SRV_TYPE, "SEQPACKET")?.listen()?;
 
     loop {
         recv_rdm_msg(&rdm)?;

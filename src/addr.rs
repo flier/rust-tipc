@@ -142,6 +142,12 @@ addr! {
     }
 }
 
+impl From<Type> for ServiceRange {
+    fn from(ty: Type) -> Self {
+        ServiceRange::with_range(ty, ..)
+    }
+}
+
 impl From<ServiceAddr> for ServiceRange {
     fn from(service: ServiceAddr) -> Self {
         ServiceRange::with_range(service.ty(), service.instance())

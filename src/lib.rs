@@ -17,7 +17,7 @@ pub use addr::{
     ToInstanceRange, Type, Visibility,
 };
 pub use sock::{
-    connect, datagram, rdm, seq_packet, stream, Buildable, Builder, Connectable, Connected,
-    Datagram, Importance, Incoming, IntoConnectAddr, IntoSendToAddr, Listener, Rejected, SeqPacket,
-    Stream,
+    bind, connect, connect_timeout, datagram, rdm, seq_packet, stream, Bindable, Bound, Buildable,
+    Builder, Connectable, Connected, Datagram, Importance, Incoming, IntoBindAddr, IntoConnectAddr,
+    IntoSendToAddr, Listener, Rejected, SeqPacket, Socket, Stream,
 };
