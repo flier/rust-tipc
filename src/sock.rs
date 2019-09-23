@@ -259,7 +259,7 @@ impl<T> Builder<T> {
     }
 
     /// Mark a socket as ready to accept incoming connection requests using accept()
-    pub fn listen(self, backlog: i32) -> io::Result<Listener<T>>
+    pub fn listen(self, backlog: i32) -> io::Result<Listener<Builder<T>>>
     where
         Listener<T>: From<Self>,
     {
@@ -417,6 +417,21 @@ where
     /// This method will fail if the socket is not connected.
     pub fn send<B: AsRef<[u8]>>(&self, buf: B) -> io::Result<usize> {
         self.0.as_ref().send(buf)
+    }
+
+    /// Get the socket address of the peer socket.
+    pub fn peer_addr(&self) -> io::Result<SocketAddr>
+    where
+        T: AsRawFd,
+    {
+        let mut sa = MaybeUninit::<ffi::sockaddr_tipc>::uninit();
+        let mut len = mem::size_of::<ffi::sockaddr_tipc>() as u32;
+
+        unsafe {
+            libc::getpeername(self.0.as_raw_fd(), sa.as_mut_ptr() as *mut _, &mut len)
+                .into_result()
+                .map(|_: ()| sa.assume_init().addr.id.into())
+        }
     }
 }
 
@@ -698,7 +713,8 @@ impl Socket {
         self.set_sock_opt(ffi::TIPC_DEST_DROPPABLE, FALSE)
     }
 
-    fn get_sock_opt<T>(&self, opt: u32) -> io::Result<T> {
+    /// Get the current value of a socket option.
+    pub fn get_sock_opt<T>(&self, opt: u32) -> io::Result<T> {
         let mut buf = MaybeUninit::<T>::zeroed();
         let mut len = mem::size_of::<T>() as u32;
 
@@ -715,7 +731,8 @@ impl Socket {
         .map(|_: ()| unsafe { buf.assume_init() })
     }
 
-    fn set_sock_opt<T>(&self, opt: u32, val: T) -> io::Result<()> {
+    /// Set a socket option.
+    pub fn set_sock_opt<T>(&self, opt: u32, val: T) -> io::Result<()> {
         unsafe {
             libc::setsockopt(
                 self.as_raw_fd(),
