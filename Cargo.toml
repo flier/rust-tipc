@@ -16,5 +16,6 @@ bitflags = "1.1"
 libc = "0.2"
 
 [dev-dependencies]
+structopt = "0.3"
 mio = "0.6"
 crossbeam = "0.7"

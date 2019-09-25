@@ -492,6 +492,11 @@ impl Stream {
     pub fn try_clone(&self) -> io::Result<Self> {
         self.0.try_clone().map(Self)
     }
+
+    /// Returns an error representing the last socket error which occurred.
+    pub fn last_error(&self) -> io::Error {
+        self.0.last_error()
+    }
 }
 
 impl io::Read for Connected<Stream> {
@@ -568,6 +573,11 @@ impl SeqPacket {
         self.0.try_clone().map(Self)
     }
 
+    /// Returns an error representing the last socket error which occurred.
+    pub fn last_error(&self) -> io::Error {
+        self.0.last_error()
+    }
+
     /// Receives data from the socket.
     ///
     /// On success, returns the number of bytes read and the address from whence the data came.
@@ -589,13 +599,6 @@ pub struct Datagram(Socket);
 forward_raw_fd_traits!(Datagram => Socket);
 
 impl Datagram {
-    /// Constructs a new `Builder` with the `AF_TIPC` domain, the `SOCK_DGRAM` type.
-    ///
-    /// Supports datagrams (connectionless, unreliable messages of a fixed maximum length).
-    pub fn datagram() -> io::Result<Builder<Datagram>> {
-        Builder::datagram()
-    }
-
     /// Binds this socket to the specified address.
     pub fn bind<A>(self, addr: A) -> io::Result<Bound<Datagram>>
     where
@@ -628,6 +631,11 @@ impl Datagram {
         self.0.try_clone().map(Self)
     }
 
+    /// Returns an error representing the last socket error which occurred.
+    pub fn last_error(&self) -> io::Error {
+        self.0.last_error()
+    }
+
     /// Receives data from the socket.
     ///
     /// On success, returns the number of bytes read and the address from whence the data came.
@@ -638,6 +646,77 @@ impl Datagram {
     /// Sends data on the socket to the given address. On success, returns the number of bytes written.
     pub fn send_to<T: AsRef<[u8]>, A: IntoSendToAddr>(&self, buf: T, dst: A) -> io::Result<usize> {
         self.0.send_to(buf, dst, Send::empty())
+    }
+
+    /// Join a communication group.
+    pub fn join(
+        self,
+        service: ServiceAddr,
+        visibility: Visibility,
+        flags: Join,
+    ) -> io::Result<Group<Self>> {
+        self.0.join(service, visibility, flags)?;
+
+        Ok(Group(self))
+    }
+}
+
+/// A communication group.
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct Group<T>(T);
+
+impl<T> Deref for Group<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> Group<T>
+where
+    T: AsRef<Socket>,
+{
+    /// Join a communication group.
+    pub fn join(
+        &self,
+        service: ServiceAddr,
+        visibility: Visibility,
+        flags: Join,
+    ) -> io::Result<()> {
+        self.0.as_ref().join(service, visibility, flags)
+    }
+
+    /// Leave a communication group.
+    pub fn leave(&self) -> io::Result<()> {
+        self.0.as_ref().leave()
+    }
+
+    /// Sends a broadcast message to all matching sockets.
+    pub fn broadcast<B: AsRef<[u8]>>(&self, buf: B) -> io::Result<usize> {
+        self.0.as_ref().send(buf, Send::empty())
+    }
+
+    /// Sends a multicast message to all matching sockets.
+    pub fn multicast<B, A>(&self, buf: B, addr: A) -> io::Result<usize>
+    where
+        B: AsRef<[u8]>,
+        A: IntoSendToAddr,
+    {
+        self.0.as_ref().mcast(buf, addr, Send::empty())
+    }
+
+    /// Sends a anycast message to all matching sockets.
+    ///
+    /// The lookup algorithm applies the regular round-robin algorithm
+    pub fn anycast<B: AsRef<[u8]>, A: IntoSendToAddr>(&self, buf: B, dst: A) -> io::Result<usize> {
+        self.0.as_ref().send_to(buf, dst, Send::empty())
+    }
+
+    /// Consumes the `Group`, returning the underlying value.
+    pub fn into_inner(self) -> T {
+        self.0
     }
 }
 
@@ -741,41 +820,54 @@ impl Socket {
 
     /// Get the message importance levels.
     pub fn importance(&self) -> io::Result<Importance> {
-        self.get_sock_opt(ffi::TIPC_IMPORTANCE)
+        self.get_sock_opt(libc::SOL_TIPC, ffi::TIPC_IMPORTANCE)
     }
 
     /// Set the message importance levels.
     pub fn set_importance(&self, importance: Importance) -> io::Result<()> {
-        self.set_sock_opt(ffi::TIPC_IMPORTANCE, importance as u32)
+        self.set_sock_opt(libc::SOL_TIPC, ffi::TIPC_IMPORTANCE, importance as u32)
     }
 
     /// Get the connect timeout.
     pub fn connect_timeout(&self) -> io::Result<Duration> {
-        self.get_sock_opt(ffi::TIPC_CONN_TIMEOUT)
+        self.get_sock_opt(libc::SOL_TIPC, ffi::TIPC_CONN_TIMEOUT)
             .map(|ms: u32| Duration::from_millis(u64::from(ms)))
     }
 
     /// Sets the connect timeout to the timeout specified.
     pub fn set_connect_timeout(&self, timeout: Duration) -> io::Result<()> {
-        self.set_sock_opt(ffi::TIPC_CONN_TIMEOUT, timeout.as_millis() as u32)
+        self.set_sock_opt(
+            libc::SOL_TIPC,
+            ffi::TIPC_CONN_TIMEOUT,
+            timeout.as_millis() as u32,
+        )
     }
 
     pub fn set_rejectable(&self, rejectable: bool) -> io::Result<()> {
         self.set_sock_opt(
+            libc::SOL_TIPC,
             ffi::TIPC_DEST_DROPPABLE,
             if rejectable { TRUE } else { FALSE },
         )
     }
 
+    /// Returns an error representing the last socket error which occurred.
+    pub fn last_error(&self) -> io::Error {
+        match self.get_sock_opt::<libc::socklen_t>(libc::SOL_SOCKET, libc::SO_ERROR as u32) {
+            Ok(err) => io::Error::from_raw_os_error(err as i32),
+            Err(err) => err,
+        }
+    }
+
     /// Get the current value of a socket option.
-    pub fn get_sock_opt<T>(&self, opt: u32) -> io::Result<T> {
+    pub fn get_sock_opt<T>(&self, level: i32, opt: u32) -> io::Result<T> {
         let mut buf = MaybeUninit::<T>::zeroed();
         let mut len = mem::size_of::<T>() as u32;
 
         unsafe {
             libc::getsockopt(
                 self.as_raw_fd(),
-                libc::SOL_TIPC,
+                level,
                 opt as i32,
                 buf.as_mut_ptr() as *mut _,
                 &mut len,
@@ -786,11 +878,11 @@ impl Socket {
     }
 
     /// Set a socket option.
-    pub fn set_sock_opt<T>(&self, opt: u32, val: T) -> io::Result<()> {
+    pub fn set_sock_opt<T>(&self, level: i32, opt: u32, val: T) -> io::Result<()> {
         unsafe {
             libc::setsockopt(
                 self.as_raw_fd(),
-                libc::SOL_TIPC,
+                level,
                 opt as i32,
                 &val as *const _ as *const _,
                 mem::size_of::<T>() as u32,
@@ -1032,9 +1124,9 @@ impl Socket {
                 Err(io::Error::new(io::ErrorKind::Other, "unexpected OOB data"))
             } else {
                 let event = if (msg.msg_flags & libc::MSG_EOR) == libc::MSG_EOR {
-                    RecvMsg::GroupDown(member_id.unwrap())
+                    RecvMsg::MemberLeave(member_id.unwrap())
                 } else {
-                    RecvMsg::GroupUp(member_id.unwrap())
+                    RecvMsg::MemberJoin(member_id.unwrap())
                 };
 
                 Ok((event, sock_id))
@@ -1091,6 +1183,38 @@ impl Socket {
                 Ok((RecvMsg::Message(rc), sock_id))
             }
         }
+    }
+
+    /// Join a communication group.
+    pub fn join(
+        &self,
+        service: ServiceAddr,
+        visibility: Visibility,
+        flags: Join,
+    ) -> io::Result<()> {
+        let req = ffi::tipc_group_req {
+            type_: service.ty(),
+            instance: service.instance(),
+            scope: visibility as u32,
+            flags: flags.bits(),
+        };
+
+        self.set_sock_opt(libc::SOL_TIPC, ffi::TIPC_GROUP_JOIN, req)
+    }
+
+    /// Leave a communication group.
+    pub fn leave(&self) -> io::Result<()> {
+        self.set_sock_opt(libc::SOL_TIPC, ffi::TIPC_GROUP_LEAVE, ())
+    }
+}
+
+bitflags! {
+    /// Flags for `join`.
+    pub struct Join: u32 {
+        /// Receive copy of sent msg when match
+        const LOOPBACK = ffi::TIPC_GROUP_LOOPBACK;
+        /// Receive membership events in socket
+        const MEMBER_EVTS = ffi::TIPC_GROUP_MEMBER_EVTS;
     }
 }
 
@@ -1256,8 +1380,8 @@ impl IntoSendToAddr for (ServiceAddr, Scope) {
 
 #[derive(Clone, Debug)]
 pub enum RecvMsg {
-    GroupUp(ServiceAddr),
-    GroupDown(ServiceAddr),
+    MemberJoin(ServiceAddr),
+    MemberLeave(ServiceAddr),
     Message(usize),
     Rejected(u32),
 }

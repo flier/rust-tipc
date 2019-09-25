@@ -18,6 +18,7 @@ pub use addr::{
 };
 pub use sock::{
     bind, connect, connect_timeout, datagram, rdm, seq_packet, stream, Bindable, Bound, Buildable,
-    Builder, Connectable, Connected, Datagram, Importance, Incoming, IntoBindAddr, IntoConnectAddr,
-    IntoSendToAddr, Listener, Recv, Rejected, Send, SeqPacket, Socket, Stream,
+    Builder, Connectable, Connected, Datagram, Group, Importance, Incoming, IntoBindAddr,
+    IntoConnectAddr, IntoSendToAddr, Join, Listener, Recv, RecvMsg, Rejected, Send, SeqPacket,
+    Socket, Stream,
 };

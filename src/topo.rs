@@ -106,7 +106,7 @@ impl From<ffi::tipc_subscr> for Subscription {
             timeout: if sub.timeout == 0 {
                 None
             } else {
-                Some(Duration::from_millis(sub.timeout as u64))
+                Some(Duration::from_millis(u64::from(sub.timeout)))
             },
             filter: Filter::from_bits_truncate(sub.filter),
             userdata: u64::from_ne_bytes(unsafe { mem::transmute(sub.usr_handle) }),
