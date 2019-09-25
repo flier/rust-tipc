@@ -1,4 +1,4 @@
-//! Topology Server
+//! The TIPC internal topology service.
 
 use core::mem::{self, MaybeUninit};
 use core::ops::Deref;
@@ -18,8 +18,10 @@ use crate::{
     Instance,
 };
 
+/// The bearer identity.
 pub type BearerId = u32;
 
+/// Connects to the TIPC internal topology service.
 pub fn connect(scope: Scope) -> io::Result<Server> {
     let sock = sock::new(libc::SOCK_SEQPACKET)?;
     let addr = ServiceAddr::new(ffi::TIPC_TOP_SRV, ffi::TIPC_TOP_SRV);
@@ -29,6 +31,7 @@ pub fn connect(scope: Scope) -> io::Result<Server> {
     Ok(Server(sock))
 }
 
+/// Waits the service ready.
 pub fn wait<A: Into<ServiceAddr>>(
     service: A,
     scope: Scope,
@@ -70,7 +73,8 @@ bitflags! {
     }
 }
 
-#[derive(Debug)]
+/// The topology service subscription.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Subscription {
     /// The service address or range of interest.
     ///
@@ -114,6 +118,7 @@ impl From<ffi::tipc_subscr> for Subscription {
     }
 }
 
+/// The node topology server,
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Server(Socket);
@@ -121,18 +126,45 @@ pub struct Server(Socket);
 forward_raw_fd_traits!(Server => Socket);
 
 impl Server {
+    /// The subscriber wants `all` or `edge` event for each matching update of the binding table.
     pub fn subscribe<A: Into<ServiceRange>>(
         &self,
         service: A,
         all: bool,
         timeout: Option<Duration>,
         userdata: u64,
-    ) -> io::Result<()> {
-        let subscr: ffi::tipc_subscr = Subscription {
+    ) -> io::Result<Subscription> {
+        let sub = Subscription {
             service: service.into(),
             timeout,
             filter: if all { Filter::PORTS } else { Filter::SERVICE },
             userdata,
+        };
+        let subscr: ffi::tipc_subscr = sub.clone().into();
+
+        unsafe {
+            libc::send(
+                self.0.as_raw_fd(),
+                &subscr as *const _ as *const _,
+                mem::size_of::<ffi::tipc_subscr>(),
+                0,
+            )
+        }
+        .into_result()
+        .and_then(|size| {
+            if size == mem::size_of::<ffi::tipc_subscr>() {
+                Ok(sub)
+            } else {
+                Err(io::Error::new(io::ErrorKind::Other, "subscribe failed"))
+            }
+        })
+    }
+
+    /// The subscriber doesn't want any more events for this service range.
+    pub fn unsubscribe(&self, sub: Subscription) -> io::Result<()> {
+        let subscr: ffi::tipc_subscr = Subscription {
+            filter: Filter::CANCEL,
+            ..sub
         }
         .into();
 
@@ -149,11 +181,12 @@ impl Server {
             if size == mem::size_of::<ffi::tipc_subscr>() {
                 Ok(())
             } else {
-                Err(io::Error::new(io::ErrorKind::Other, "subscribe failed"))
+                Err(io::Error::new(io::ErrorKind::Other, "unsubscribe failed"))
             }
         })
     }
 
+    /// Receives events for this service range.
     pub fn recv(&self) -> io::Result<Event> {
         let mut evt = MaybeUninit::<ffi::tipc_event>::zeroed();
 
@@ -211,6 +244,7 @@ impl Server {
     }
 }
 
+/// The service event.
 #[derive(Debug)]
 pub enum Event {
     /// A matching binding was found in the binding table.
@@ -263,6 +297,9 @@ impl Event {
     }
 }
 
+/// An iterator over the events.
+#[repr(transparent)]
+#[derive(Debug)]
 pub struct Events<'a>(&'a Server);
 
 impl<'a> Iterator for Events<'a> {
@@ -282,6 +319,7 @@ impl<'a> IntoIterator for &'a Server {
     }
 }
 
+/// Subscribe events for neighbor nodes.
 pub fn neighbor_nodes(scope: Scope) -> io::Result<Nodes> {
     let srv = connect(scope)?;
 
@@ -290,21 +328,43 @@ pub fn neighbor_nodes(scope: Scope) -> io::Result<Nodes> {
     Ok(Nodes(srv))
 }
 
+/// The node event.
 #[derive(Debug)]
-pub struct Node {
-    pub id: Instance,
-    pub available: bool,
+pub enum Node {
+    Up(Instance),
+    Down(Instance),
 }
 
 impl From<Event> for Node {
     fn from(event: Event) -> Self {
-        Node {
-            id: event.sock().node(),
-            available: event.available(),
+        let node = event.sock().node();
+
+        if event.available() {
+            Node::Up(node)
+        } else {
+            Node::Down(node)
         }
     }
 }
 
+impl Node {
+    /// The node is available.
+    pub fn available(&self) -> bool {
+        match self {
+            Node::Up(_) => true,
+            Node::Down(_) => false,
+        }
+    }
+
+    /// The node instance.
+    pub fn instance(&self) -> Instance {
+        match *self {
+            Node::Up(instance) | Node::Down(instance) => instance,
+        }
+    }
+}
+
+/// An iterator over the node events.
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Nodes(Server);
@@ -325,6 +385,7 @@ impl Nodes {
     }
 }
 
+/// Subscribe events for neighbor links.
 pub fn neighbor_links(scope: Scope) -> io::Result<Links> {
     let srv = connect(scope)?;
 
@@ -333,35 +394,78 @@ pub fn neighbor_links(scope: Scope) -> io::Result<Links> {
     Ok(Links(srv))
 }
 
+/// The link event.
 #[derive(Debug)]
-pub struct Link {
-    pub local: BearerId,
-    pub remote: BearerId,
-    pub neighbor: Instance,
-    pub available: bool,
+pub enum Link {
+    Up {
+        local: BearerId,
+        remote: BearerId,
+        neighbor: Instance,
+    },
+    Down {
+        local: BearerId,
+        remote: BearerId,
+        neighbor: Instance,
+    },
 }
 
 impl From<Event> for Link {
     fn from(event: Event) -> Self {
-        Link {
-            local: event.sock().port() & 0xFFFF,
-            remote: (event.sock().port() >> 16) & 0xFFFF,
-            neighbor: event.service().lower(),
-            available: event.available(),
+        let local = event.sock().port() & 0xFFFF;
+        let remote = (event.sock().port() >> 16) & 0xFFFF;
+        let neighbor = event.service().lower();
+
+        if event.available() {
+            Link::Up {
+                local,
+                remote,
+                neighbor,
+            }
+        } else {
+            Link::Down {
+                local,
+                remote,
+                neighbor,
+            }
         }
     }
 }
 
 impl Link {
-    pub fn local_link(&self) -> Fallible<String> {
-        link_name(self.neighbor, self.local)
+    /// The link is available.
+    pub fn available(&self) -> bool {
+        match self {
+            Link::Up { .. } => true,
+            Link::Down { .. } => false,
+        }
     }
 
+    /// The local link name.
+    pub fn local_link(&self) -> Fallible<String> {
+        match *self {
+            Link::Up {
+                local, neighbor, ..
+            }
+            | Link::Down {
+                local, neighbor, ..
+            } => link_name(neighbor, local),
+        }
+    }
+
+    /// The remote link name.
     pub fn remote_link(&self) -> Fallible<String> {
-        link_name(self.neighbor, self.remote)
+        match *self {
+            Link::Up {
+                remote, neighbor, ..
+            }
+            | Link::Down {
+                remote, neighbor, ..
+            } => link_name(neighbor, remote),
+        }
     }
 }
 
+/// An iterator over the link events.
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Links(Server);
@@ -382,7 +486,7 @@ impl Links {
     }
 }
 
-pub fn link_name(peer: Instance, bearer_id: BearerId) -> Fallible<String> {
+fn link_name(peer: Instance, bearer_id: BearerId) -> Fallible<String> {
     let srv = sock::rdm()?;
     let mut req = ffi::tipc_sioc_ln_req {
         peer,

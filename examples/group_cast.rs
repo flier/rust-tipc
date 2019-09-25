@@ -157,7 +157,7 @@ impl Client {
                         self.dst_member_cnt -= 1;
                     }
                 }
-                RecvMsg::Message(len, _) if len == BUF_LEN => {
+                RecvMsg::Message { len, .. } if len == BUF_LEN => {
                     let hdr = unsafe { &*(buf.as_ptr() as *const MsgHeader) };
 
                     match hdr.ty {

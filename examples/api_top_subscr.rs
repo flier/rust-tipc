@@ -6,7 +6,7 @@ use mio::{
     unix::{EventedFd, UnixReady},
     Events, Poll, PollOpt, Ready, Token,
 };
-use tipc::{own_node, topo, Scope, Type};
+use tipc::{topo, Scope, Type};
 
 const RDM_SRV_TYPE: Type = 18888;
 const STREAM_SRV_TYPE: Type = 17777;
@@ -97,31 +97,34 @@ fn main() -> Fallible<()> {
                 NEIGHBOR_NODES if ready.is_readable() => {
                     let node = nodes.recv().context("reception of service event")?;
 
-                    if node.available {
-                        println!("Found neighbor node {}", node.id);
+                    match node {
+                        topo::Node::Up(instance) => {
+                            println!("Found neighbor node {}", instance);
 
-                        // Allow only one "neighbor's neighbor's" subsription
-                        if neigh_topsrvnode.is_none() && node.id != own_node() {
-                            let neigh_node = topo::neighbor_nodes(Scope::new(node.id))?;
+                            // Allow only one "neighbor's neighbor's" subsription
+                            if neigh_topsrvnode.is_none() && !Scope::new(instance).is_own_node() {
+                                let neigh_node = topo::neighbor_nodes(Scope::new(instance))?;
 
-                            poll.register(
-                                &EventedFd(&neigh_node),
-                                NEIGHBOR_NODE,
-                                Ready::readable() | UnixReady::hup(),
-                                PollOpt::empty(),
-                            )?;
+                                poll.register(
+                                    &EventedFd(&neigh_node),
+                                    NEIGHBOR_NODE,
+                                    Ready::readable() | UnixReady::hup(),
+                                    PollOpt::empty(),
+                                )?;
 
-                            neigh_topsrvnode = Some((neigh_node, node.id));
-                        }
-                    } else {
-                        println!("Lost contact with neighbor node {}", node.id);
-
-                        match neigh_topsrvnode {
-                            Some((ref neigh_node, id)) if id == node.id => {
-                                poll.deregister(&EventedFd(&neigh_node))?;
-                                neigh_topsrvnode.take();
+                                neigh_topsrvnode = Some((neigh_node, instance));
                             }
-                            _ => {}
+                        }
+                        topo::Node::Down(instance) => {
+                            println!("Lost contact with neighbor node {}", instance);
+
+                            match neigh_topsrvnode {
+                                Some((ref neigh_node, id)) if id == instance => {
+                                    poll.deregister(&EventedFd(&neigh_node))?;
+                                    neigh_topsrvnode.take();
+                                }
+                                _ => {}
+                            }
                         }
                     }
                 }
@@ -130,7 +133,7 @@ fn main() -> Fallible<()> {
 
                     println!(
                         "{} link {}",
-                        if link.available { "Found" } else { "Lost" },
+                        if link.available() { "Found" } else { "Lost" },
                         link.local_link()?
                     );
                 }
@@ -146,12 +149,12 @@ fn main() -> Fallible<()> {
                         println!(
                             "Neighbor node {} {} {}",
                             id,
-                            if node.available {
+                            if node.available() {
                                 "found node"
                             } else {
                                 "lost contact with node"
                             },
-                            node.id
+                            node.instance()
                         )
                     }
                 }

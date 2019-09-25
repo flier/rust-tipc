@@ -1,3 +1,4 @@
+use core::cmp::PartialEq;
 use core::fmt;
 use core::num::NonZeroU32;
 use core::num::ParseIntError;
@@ -432,15 +433,35 @@ impl From<u32> for Scope {
     }
 }
 
+impl PartialEq<u32> for Scope {
+    fn eq(&self, other: &u32) -> bool {
+        match self {
+            Scope::Global => 0u32 == *other,
+            Scope::Node(instance) => instance.get() == *other,
+        }
+    }
+}
+
 impl Scope {
+    /// Creates a new `Scope` with the given node.
     pub fn new(node: u32) -> Self {
         NonZeroU32::new(node).map_or(Scope::Global, Scope::Node)
     }
 
-    pub fn own() -> Self {
+    /// Creates a new `Scope` with the own node.
+    pub fn own_node() -> Self {
         Self::new(own_node())
     }
 
+    /// Checks if a node is the own node.
+    pub fn is_own_node(&self) -> bool {
+        match self {
+            Scope::Node(instance) if instance.get() == own_node() => true,
+            _ => false,
+        }
+    }
+
+    /// Returns the `Visibility` level for self.
     pub fn visibility(self) -> Visibility {
         match self {
             Scope::Node(node) if node.get() == own_node() => Visibility::Node,

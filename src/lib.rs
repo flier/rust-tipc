@@ -17,8 +17,8 @@ pub mod ffi {
     pub use crate::raw::*;
 }
 pub use addr::{
-    own_node, AddrParseError, Instance, Scope, ServiceAddr, ServiceRange, SocketAddr,
-    ToInstanceRange, Type, Visibility,
+    AddrParseError, Instance, Scope, ServiceAddr, ServiceRange, SocketAddr, ToInstanceRange, Type,
+    Visibility,
 };
 pub use sock::{
     bind, connect, connect_timeout, datagram, rdm, seq_packet, stream, Bindable, Bound, Buildable,

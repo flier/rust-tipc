@@ -1121,8 +1121,8 @@ impl Socket {
         flags: Recv,
     ) -> io::Result<(usize, SocketAddr)> {
         match self.recv_msg(buf, flags)? {
-            (RecvMsg::Message(len, _), addr) => Ok((len, addr)),
-            (RecvMsg::Rejected(err, _), _) => Err(io::Error::new(
+            (RecvMsg::Message { len, .. }, addr) => Ok((len, addr)),
+            (RecvMsg::Rejected { err, .. }, _) => Err(io::Error::new(
                 io::ErrorKind::Other,
                 Error::from(Rejected(err)),
             )),
@@ -1196,7 +1196,7 @@ impl Socket {
             msg_flags: 0,
         };
 
-        let rc =
+        let len =
             unsafe { libc::recvmsg(self.as_raw_fd(), &mut msg, flags.bits()) }.into_result()?;
 
         let addr = unsafe { addr.assume_init() };
@@ -1211,7 +1211,7 @@ impl Socket {
 
         // Handle group member event
         if (msg.msg_flags & libc::MSG_OOB) == libc::MSG_OOB {
-            if rc != 0 {
+            if len != 0 {
                 Err(io::Error::new(io::ErrorKind::Other, "unexpected OOB data"))
             } else {
                 let event = if (msg.msg_flags & libc::MSG_EOR) == libc::MSG_EOR {
@@ -1224,8 +1224,8 @@ impl Socket {
             }
         } else {
             let mut err = None;
-            let mut len = None;
-            let mut dest_name = None;
+            let mut err_len = None;
+            let mut service = None;
 
             for (ty, level, data) in unsafe { cmsgs(&msg) } {
                 if level == libc::SOL_TIPC {
@@ -1239,7 +1239,7 @@ impl Socket {
                                 .try_into()
                                 .map(u32::from_ne_bytes)
                                 .ok();
-                            len = chunks
+                            err_len = chunks
                                 .next()
                                 .unwrap()
                                 .try_into()
@@ -1247,8 +1247,8 @@ impl Socket {
                                 .map(|n| n as usize)
                                 .ok();
                         }
-                        ffi::TIPC_RETDATA if Some(data.len()) == len => {
-                            let len = buf.len().min(len.unwrap());
+                        ffi::TIPC_RETDATA if Some(data.len()) == err_len => {
+                            let len = buf.len().min(err_len.unwrap());
                             let buf = &mut buf[..len];
 
                             buf.copy_from_slice(&data[..len]);
@@ -1256,7 +1256,7 @@ impl Socket {
                         ffi::TIPC_DESTNAME
                             if data.len() == mem::size_of::<ffi::tipc_name_seq>() =>
                         {
-                            dest_name = NonNull::new(data.as_ptr() as *mut u8)
+                            service = NonNull::new(data.as_ptr() as *mut u8)
                                 .map(|p| p.cast::<ffi::tipc_name_seq>())
                                 .map(|p| unsafe { p.as_ptr().read() }.into());
                         }
@@ -1266,9 +1266,9 @@ impl Socket {
             }
 
             if let Some(err) = err {
-                Ok((RecvMsg::Rejected(err, dest_name), self.local_addr()?))
+                Ok((RecvMsg::Rejected { err, service }, self.local_addr()?))
             } else {
-                Ok((RecvMsg::Message(rc, dest_name), sock_id))
+                Ok((RecvMsg::Message { len, service }, sock_id))
             }
         }
     }
@@ -1484,12 +1484,23 @@ where
     }
 }
 
+/// Received message from a TIPC socket.
 #[derive(Clone, Debug)]
 pub enum RecvMsg {
+    /// Reception of a membership event.
     MemberJoin(ServiceAddr),
+    /// Reception of a membership event.
     MemberLeave(ServiceAddr),
-    Message(usize, Option<ServiceRange>),
-    Rejected(u32, Option<ServiceRange>),
+    /// A returned undelivered data message.
+    Message {
+        len: usize,
+        service: Option<ServiceRange>,
+    },
+    /// The message was rejected
+    Rejected {
+        err: u32,
+        service: Option<ServiceRange>,
+    },
 }
 
 pub trait IntoResult<T> {
