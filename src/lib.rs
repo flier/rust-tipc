@@ -12,6 +12,7 @@ pub mod topo;
 )]
 mod raw;
 
+#[doc(hidden)]
 pub mod ffi {
     pub use crate::raw::*;
 }
@@ -21,7 +22,6 @@ pub use addr::{
 };
 pub use sock::{
     bind, connect, connect_timeout, datagram, rdm, seq_packet, stream, Bindable, Bound, Buildable,
-    Builder, Connectable, Connected, Datagram, Group, Importance, Incoming, IntoBindAddr,
-    IntoConnectAddr, IntoSendToAddr, Join, Listener, Recv, RecvMsg, Rejected, Send, SeqPacket,
-    Socket, Stream,
+    Builder, Connectable, Connected, Datagram, Group, Importance, Incoming, Join, Listener, Recv,
+    RecvMsg, Rejected, Send, SeqPacket, Socket, Stream, ToBindAddr, ToConnectAddr, ToSendToAddr,
 };

@@ -50,7 +50,11 @@ fn main() -> Fallible<()> {
 
             println!("Client: Send packet to {}", addr);
 
-            rdm.send_to("HDDDDDDD", addr)?;
+            let header = b"H";
+            let data = b"DDDDDDD";
+            let iov = [io::IoSlice::new(header), io::IoSlice::new(data)];
+
+            rdm.send_vectored(&iov[..], addr)?;
 
             Ok(())
         });
