@@ -1,4 +1,3 @@
-use std::net::Shutdown;
 use std::str;
 
 use failure::Fallible;
@@ -35,7 +34,7 @@ fn main() -> Fallible<()> {
 
         println!("Client: received response {:?}", msg);
 
-        peer.shutdown(Shutdown::Both)?;
+        peer.shutdown()?;
 
         println!("Client: shutting down connection");
     }

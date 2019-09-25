@@ -10,7 +10,6 @@ use core::slice;
 use core::time::Duration;
 
 use std::io;
-use std::net::Shutdown;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
 use bitflags::bitflags;
@@ -327,9 +326,12 @@ where
     /// Mark a socket as ready to accept incoming connection requests using accept()
     pub fn listen(self) -> io::Result<Listener<T>>
     where
-        Listener<T>: From<T>,
+        T: Connectable + Into<Socket>,
     {
-        self.0.as_ref().listen().map(|_| self.0.into())
+        self.0
+            .as_ref()
+            .listen()
+            .map(|_| Listener(self.0.into(), PhantomData))
     }
 }
 
@@ -340,15 +342,12 @@ pub struct Listener<T>(Socket, PhantomData<T>);
 
 forward_raw_fd_traits!(Listener<T> => Socket);
 
-impl From<Stream> for Listener<Stream> {
-    fn from(stream: Stream) -> Self {
-        Self(stream.0, PhantomData)
-    }
-}
-
-impl From<SeqPacket> for Listener<SeqPacket> {
-    fn from(seq_packet: SeqPacket) -> Self {
-        Self(seq_packet.0, PhantomData)
+impl<T> From<T> for Listener<T>
+where
+    T: Connectable + Into<Socket>,
+{
+    fn from(sock: T) -> Self {
+        Self(sock.into(), PhantomData)
     }
 }
 
@@ -366,7 +365,7 @@ impl<T> Listener<T> {
     /// Accept a new incoming connection from this listener.
     pub fn accept(&self) -> io::Result<(Connected<T>, SocketAddr)>
     where
-        T: FromRawFd,
+        T: Connectable + FromRawFd,
     {
         let mut sa = MaybeUninit::<ffi::sockaddr_tipc>::uninit();
         let mut len = mem::size_of::<ffi::sockaddr_tipc>() as u32;
@@ -401,7 +400,7 @@ pub struct Incoming<'a, T> {
 
 impl<'a, T> Iterator for Incoming<'a, T>
 where
-    T: FromRawFd,
+    T: Connectable + FromRawFd,
 {
     type Item = io::Result<Connected<T>>;
 
@@ -452,18 +451,27 @@ where
     }
 
     /// Get the socket address of the peer socket.
-    pub fn peer_addr(&self) -> io::Result<SocketAddr>
-    where
-        T: AsRawFd,
-    {
+    pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         let mut sa = MaybeUninit::<ffi::sockaddr_tipc>::uninit();
         let mut len = mem::size_of::<ffi::sockaddr_tipc>() as u32;
 
         unsafe {
-            libc::getpeername(self.0.as_raw_fd(), sa.as_mut_ptr() as *mut _, &mut len)
-                .into_result()
-                .map(|_: ()| sa.assume_init().addr.id.into())
+            libc::getpeername(
+                self.0.as_ref().as_raw_fd(),
+                sa.as_mut_ptr() as *mut _,
+                &mut len,
+            )
+            .into_result()
+            .map(|_: ()| sa.assume_init().addr.id.into())
         }
+    }
+
+    /// Shut down the read and write halves of this connection.
+    pub fn shutdown(&self) -> io::Result<()>
+    where
+        T: Connectable,
+    {
+        self.0.as_ref().shutdown()
     }
 }
 
@@ -474,16 +482,23 @@ pub struct Stream(Socket);
 
 forward_raw_fd_traits!(Stream => Socket);
 
+impl From<Stream> for Socket {
+    fn from(stream: Stream) -> Self {
+        stream.0
+    }
+}
+
+impl From<Socket> for Stream {
+    fn from(socket: Socket) -> Self {
+        Stream(socket)
+    }
+}
+
 impl Stream {
     /// Opens a TIPC connection to a remote host.
     pub fn connect<A: ToConnectAddr>(self, addr: A) -> io::Result<Connected<Self>> {
         self.0.connect(addr)?;
         Ok(Connected(self))
-    }
-
-    /// Shut down the read, write, or both halves of this connection.
-    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
-        self.0.shutdown(how)
     }
 
     /// Moves this stream into or out of nonblocking mode.
@@ -549,6 +564,18 @@ pub struct SeqPacket(Socket);
 
 forward_raw_fd_traits!(SeqPacket => Socket);
 
+impl From<SeqPacket> for Socket {
+    fn from(seq_packet: SeqPacket) -> Self {
+        seq_packet.0
+    }
+}
+
+impl From<Socket> for SeqPacket {
+    fn from(socket: Socket) -> Self {
+        SeqPacket(socket)
+    }
+}
+
 impl SeqPacket {
     /// Opens a TIPC connection to a remote host.
     pub fn connect<A: ToConnectAddr>(self, addr: A) -> io::Result<Connected<Self>> {
@@ -559,11 +586,6 @@ impl SeqPacket {
     /// Into a implied connected socket.
     pub fn into_connected(self) -> Connected<Self> {
         Connected(self)
-    }
-
-    /// Shut down the read, write, or both halves of this connection.
-    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
-        self.0.shutdown(how)
     }
 
     /// Moves this stream into or out of nonblocking mode.
@@ -605,6 +627,18 @@ impl SeqPacket {
 pub struct Datagram(Socket);
 
 forward_raw_fd_traits!(Datagram => Socket);
+
+impl From<Datagram> for Socket {
+    fn from(datagram: Datagram) -> Self {
+        datagram.0
+    }
+}
+
+impl From<Socket> for Datagram {
+    fn from(socket: Socket) -> Self {
+        Datagram(socket)
+    }
+}
 
 impl Datagram {
     /// Binds this socket to the specified address.
@@ -1010,19 +1044,12 @@ impl Socket {
         .into_result()
     }
 
-    /// Shut down the read, write, or both halves of this connection.
-    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
-        unsafe {
-            libc::shutdown(
-                self.as_raw_fd(),
-                match how {
-                    Shutdown::Read => libc::SHUT_RD,
-                    Shutdown::Write => libc::SHUT_WR,
-                    Shutdown::Both => libc::SHUT_RDWR,
-                },
-            )
-        }
-        .into_result()
+    /// Shut down the read and write halves of this connection.
+    ///
+    /// The socket's peer is notified that the connection was gracefully terminated
+    /// (by means of the TIPC_CONN_SHUTDOWN error code), rather than as the result of an error.
+    pub fn shutdown(&self) -> io::Result<()> {
+        unsafe { libc::shutdown(self.as_raw_fd(), libc::SHUT_RDWR) }.into_result()
     }
 
     /// Sends data on the socket to the remote address to which it is connected.

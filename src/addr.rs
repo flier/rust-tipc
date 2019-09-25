@@ -454,7 +454,7 @@ impl Scope {
     }
 
     /// Checks if a node is the own node.
-    pub fn is_own_node(&self) -> bool {
+    pub fn is_own_node(self) -> bool {
         match self {
             Scope::Node(instance) if instance.get() == own_node() => true,
             _ => false,

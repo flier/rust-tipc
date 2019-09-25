@@ -1,7 +1,6 @@
 use std::io::{prelude::*, Cursor};
 use std::iter;
 use std::mem;
-use std::net::Shutdown;
 
 use failure::Fallible;
 
@@ -69,7 +68,7 @@ fn main() -> Fallible<()> {
 
     println!("Client: received {} acknowledgements", rec_num);
 
-    peer.shutdown(Shutdown::Both)?;
+    peer.shutdown()?;
 
     println!("****** TIPC stream demo client finished ******");
 
