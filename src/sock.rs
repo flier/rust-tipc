@@ -24,6 +24,8 @@ use crate::{
 const TRUE: i32 = 1;
 const FALSE: i32 = 0;
 
+const MAX_MSG_SIZE: usize = 1024;
+
 /// Message importance levels
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1158,14 +1160,14 @@ impl Socket {
         flags: Recv,
     ) -> io::Result<(usize, SocketAddr, Option<ServiceRange>)> {
         let mut sender = MaybeUninit::<ffi::sockaddr_tipc>::zeroed();
-        let mut control = MaybeUninit::<[u8; 256]>::zeroed();
+        let mut control = MaybeUninit::<[u8; MAX_MSG_SIZE]>::zeroed();
         let mut msg = libc::msghdr {
             msg_name: sender.as_mut_ptr() as *mut _ as *mut _,
             msg_namelen: mem::size_of::<ffi::sockaddr_tipc>() as u32,
             msg_iov: bufs.as_mut_ptr() as *mut _ as *mut _,
             msg_iovlen: bufs.len(),
             msg_control: control.as_mut_ptr() as *mut _ as *mut _,
-            msg_controllen: 256,
+            msg_controllen: MAX_MSG_SIZE,
             msg_flags: 0,
         };
 
