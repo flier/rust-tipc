@@ -277,6 +277,11 @@ impl<T> Builder<T> {
     pub fn nonblocking(self, nonblocking: bool) -> io::Result<Self> {
         self.0.set_nonblocking(nonblocking).map(|_| self)
     }
+
+    /// Sets the maximum socket receive buffer in bytes.
+    pub fn recv_buf_size(self, size: i32) -> io::Result<Self> {
+        self.0.set_recv_buf_size(size).map(|_| self)
+    }
 }
 
 /// A bound socket has a logical TIPC port name associated with it.
@@ -888,6 +893,16 @@ impl Socket {
             Ok(err) => io::Error::from_raw_os_error(err as i32),
             Err(err) => err,
         }
+    }
+
+    /// Gets the maximum socket receive buffer in bytes.
+    pub fn recv_buf_size(&self) -> io::Result<i32> {
+        self.get_sock_opt(libc::SOL_SOCKET, libc::SO_RCVBUF as u32)
+    }
+
+    /// Sets the maximum socket receive buffer in bytes.
+    pub fn set_recv_buf_size(&self, size: i32) -> io::Result<()> {
+        self.set_sock_opt(libc::SOL_SOCKET, libc::SO_RCVBUF as u32, size)
     }
 
     /// Get the current value of a socket option.
