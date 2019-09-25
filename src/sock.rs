@@ -643,6 +643,17 @@ impl Datagram {
         self.0.recv_from(buf, Recv::empty())
     }
 
+    /// Like `recv_from`, except that it receives into a slice of buffers.
+    ///
+    /// Data is copied to fill each buffer in order, with the final buffer written to possibly being only partially filled.
+    /// This method must behave as a single call to `recv_from` with the buffers concatenated would.
+    pub fn recv_vectored(
+        &self,
+        bufs: &mut [io::IoSliceMut],
+    ) -> io::Result<(usize, SocketAddr, Option<ServiceRange>)> {
+        self.0.recv_vectored(bufs, Recv::empty())
+    }
+
     /// Sends data on the socket to the given address. On success, returns the number of bytes written.
     pub fn send_to<T: AsRef<[u8]>, A: IntoSendToAddr>(&self, buf: T, dst: A) -> io::Result<usize> {
         self.0.send_to(buf, dst, Send::empty())
@@ -1068,8 +1079,8 @@ impl Socket {
         flags: Recv,
     ) -> io::Result<(usize, SocketAddr)> {
         match self.recv_msg(buf, flags)? {
-            (RecvMsg::Message(len), addr) => Ok((len, addr)),
-            (RecvMsg::Rejected(err), _) => Err(io::Error::new(
+            (RecvMsg::Message(len, _), addr) => Ok((len, addr)),
+            (RecvMsg::Rejected(err, _), _) => Err(io::Error::new(
                 io::ErrorKind::Other,
                 Error::from(Rejected(err)),
             )),
@@ -1078,6 +1089,44 @@ impl Socket {
                 format_err!("unexpected group event: {:?}", msg),
             )),
         }
+    }
+
+    /// Like `recv_from`, except that it receives into a slice of buffers.
+    ///
+    /// Data is copied to fill each buffer in order, with the final buffer written to possibly being only partially filled.
+    /// This method must behave as a single call to `recv_from` with the buffers concatenated would.
+    pub fn recv_vectored(
+        &self,
+        bufs: &mut [io::IoSliceMut],
+        flags: Recv,
+    ) -> io::Result<(usize, SocketAddr, Option<ServiceRange>)> {
+        let mut sender = MaybeUninit::<ffi::sockaddr_tipc>::zeroed();
+        let mut control = MaybeUninit::<[u8; 256]>::zeroed();
+        let mut msg = libc::msghdr {
+            msg_name: sender.as_mut_ptr() as *mut _ as *mut _,
+            msg_namelen: mem::size_of::<ffi::sockaddr_tipc>() as u32,
+            msg_iov: bufs.as_mut_ptr() as *mut _ as *mut _,
+            msg_iovlen: bufs.len(),
+            msg_control: control.as_mut_ptr() as *mut _ as *mut _,
+            msg_controllen: 256,
+            msg_flags: 0,
+        };
+
+        let len =
+            unsafe { libc::recvmsg(self.as_raw_fd(), &mut msg, flags.bits()) }.into_result()?;
+
+        let sender = unsafe { sender.assume_init().addr.id.into() };
+        let dest_name = unsafe { cmsgs(&msg) }
+            .find(|&(ty, level, data)| {
+                level == libc::SOL_TIPC
+                    && ty == ffi::TIPC_DESTNAME as i32
+                    && data.len() == mem::size_of::<ffi::tipc_name_seq>()
+            })
+            .map(|(_, _, data)| unsafe {
+                (data.as_ptr() as *const ffi::tipc_name_seq).read().into()
+            });
+
+        Ok((len, sender, dest_name))
     }
 
     pub fn recv_msg<T: AsMut<[u8]>>(
@@ -1092,18 +1141,18 @@ impl Socket {
             iov_base: buf.as_mut_ptr() as *mut _,
             iov_len: buf.len(),
         };
-        let mut msg = unsafe { MaybeUninit::<libc::msghdr>::zeroed().assume_init() };
         let anc_space_size =
             unsafe { libc::CMSG_SPACE(8) + libc::CMSG_SPACE(1024) + libc::CMSG_SPACE(16) };
         let mut anc_space = vec![0u8; anc_space_size as usize];
-
-        msg.msg_name = addr.as_mut_ptr() as *mut _;
-        msg.msg_namelen = addr_len;
-        msg.msg_iov = &iov as *const _ as *mut _;
-        msg.msg_iovlen = 1;
-
-        msg.msg_control = anc_space.as_mut_ptr() as *mut _;
-        msg.msg_controllen = anc_space.len();
+        let mut msg = libc::msghdr {
+            msg_name: addr.as_mut_ptr() as *mut _,
+            msg_namelen: addr_len,
+            msg_iov: &iov as *const _ as *mut _,
+            msg_iovlen: 1,
+            msg_control: anc_space.as_mut_ptr() as *mut _,
+            msg_controllen: anc_space.len(),
+            msg_flags: 0,
+        };
 
         let rc =
             unsafe { libc::recvmsg(self.as_raw_fd(), &mut msg, flags.bits()) }.into_result()?;
@@ -1134,6 +1183,7 @@ impl Socket {
         } else {
             let mut err = None;
             let mut len = None;
+            let mut dest_name = None;
 
             for (ty, level, data) in unsafe { cmsgs(&msg) } {
                 if level == libc::SOL_TIPC {
@@ -1161,16 +1211,12 @@ impl Socket {
 
                             buf.copy_from_slice(&data[..len]);
                         }
-                        ffi::TIPC_DESTNAME if data.len() == mem::size_of::<u32>() * 3 => {
-                            let mut chunks = data.chunks_exact(mem::size_of::<u32>());
-
-                            let ty = u32::from_ne_bytes(chunks.next().unwrap().try_into().unwrap());
-                            let lower =
-                                u32::from_ne_bytes(chunks.next().unwrap().try_into().unwrap());
-                            let higher =
-                                u32::from_ne_bytes(chunks.next().unwrap().try_into().unwrap());
-
-                            let _dest_name = ServiceRange::new(ty, lower, higher);
+                        ffi::TIPC_DESTNAME
+                            if data.len() == mem::size_of::<ffi::tipc_name_seq>() =>
+                        {
+                            dest_name = Some(unsafe {
+                                (data.as_ptr() as *const ffi::tipc_name_seq).read().into()
+                            });
                         }
                         _ => {}
                     }
@@ -1178,9 +1224,9 @@ impl Socket {
             }
 
             if let Some(err) = err {
-                Ok((RecvMsg::Rejected(err), self.local_addr()?))
+                Ok((RecvMsg::Rejected(err, dest_name), self.local_addr()?))
             } else {
-                Ok((RecvMsg::Message(rc), sock_id))
+                Ok((RecvMsg::Message(rc, dest_name), sock_id))
             }
         }
     }
@@ -1278,7 +1324,7 @@ pub trait IntoBindAddr {
 
 impl IntoBindAddr for ServiceAddr {
     fn into_bind_addr(self) -> ffi::sockaddr_tipc {
-        (self.into(), Visibility::Cluster).into_bind_addr()
+        (ServiceRange::from(self), Visibility::Cluster).into_bind_addr()
     }
 }
 impl IntoBindAddr for ServiceRange {
@@ -1297,7 +1343,7 @@ impl IntoBindAddr for (ServiceRange, Visibility) {
 impl IntoBindAddr for (Type, Instance, Visibility) {
     fn into_bind_addr(self) -> ffi::sockaddr_tipc {
         let (ty, instance, visibility) = self;
-        ((ty, instance).into(), visibility).into_bind_addr()
+        (ServiceRange::from((ty, instance)), visibility).into_bind_addr()
     }
 }
 impl IntoBindAddr for (Type, Instance) {
@@ -1308,12 +1354,18 @@ impl IntoBindAddr for (Type, Instance) {
 impl IntoBindAddr for (Type, Range<Instance>, Visibility) {
     fn into_bind_addr(self) -> ffi::sockaddr_tipc {
         let (ty, service_range, visibility) = self;
-        ((ty, service_range).into(), visibility).into_bind_addr()
+        (ServiceRange::from((ty, service_range)), visibility).into_bind_addr()
     }
 }
 impl IntoBindAddr for (Type, Range<Instance>) {
     fn into_bind_addr(self) -> ffi::sockaddr_tipc {
         ServiceRange::from(self).into()
+    }
+}
+impl IntoBindAddr for (Type, Visibility) {
+    fn into_bind_addr(self) -> ffi::sockaddr_tipc {
+        let (ty, visibility) = self;
+        (ServiceRange::with_range(ty, ..), visibility).into_bind_addr()
     }
 }
 impl IntoBindAddr for Type {
@@ -1382,8 +1434,8 @@ impl IntoSendToAddr for (ServiceAddr, Scope) {
 pub enum RecvMsg {
     MemberJoin(ServiceAddr),
     MemberLeave(ServiceAddr),
-    Message(usize),
-    Rejected(u32),
+    Message(usize, Option<ServiceRange>),
+    Rejected(u32, Option<ServiceRange>),
 }
 
 pub trait IntoResult<T> {

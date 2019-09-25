@@ -125,9 +125,7 @@ fn main() -> Fallible<()> {
     let seq_packet_lisener: Listener<SeqPacket> =
         bind_service(Builder::seq_packet()?, SEQPKT_SRV_TYPE, "SEQPACKET")?.listen()?;
 
-    loop {
-        recv_rdm_msg(&rdm)?;
-
+    while let Ok(_) = recv_rdm_msg(&rdm) {
         let poll = Poll::new()?;
         let mut events = Events::with_capacity(16);
 

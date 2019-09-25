@@ -1,3 +1,6 @@
+//! A demo showing how unicast/anycast/multicast/broadcast can be sent loss free from a client to multiple servers,
+//! demonstrating the group communication feature's flow control and sequence guarantee.
+
 use std::io;
 use std::mem;
 use std::time::{Duration, Instant};
@@ -154,7 +157,7 @@ impl Client {
                         self.dst_member_cnt -= 1;
                     }
                 }
-                RecvMsg::Message(len) if len == BUF_LEN => {
+                RecvMsg::Message(len, _) if len == BUF_LEN => {
                     let hdr = unsafe { &*(buf.as_ptr() as *const MsgHeader) };
 
                     match hdr.ty {

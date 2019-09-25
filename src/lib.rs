@@ -12,6 +12,9 @@ pub mod topo;
 )]
 mod raw;
 
+pub mod ffi {
+    pub use crate::raw::*;
+}
 pub use addr::{
     own_node, AddrParseError, Instance, Scope, ServiceAddr, ServiceRange, SocketAddr,
     ToInstanceRange, Type, Visibility,
