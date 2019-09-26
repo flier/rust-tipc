@@ -13,7 +13,7 @@ use failure::Fallible;
 
 use crate::{
     addr::{Scope, ServiceAddr, ServiceRange, SocketAddr},
-    forward_raw_fd_traits, raw as ffi,
+    impl_raw_fd_traits, raw as ffi,
     sock::{self, IntoResult, Socket},
     Instance,
 };
@@ -123,7 +123,7 @@ impl From<ffi::tipc_subscr> for Subscription {
 #[derive(Debug)]
 pub struct Server(Socket);
 
-forward_raw_fd_traits!(Server => Socket);
+impl_raw_fd_traits!(Server);
 
 impl Server {
     /// The subscriber wants `all` or `edge` event for each matching update of the binding table.
@@ -369,7 +369,7 @@ impl Node {
 #[derive(Debug)]
 pub struct Nodes(Server);
 
-forward_raw_fd_traits!(Nodes => Server);
+impl_raw_fd_traits! { Nodes(Server) }
 
 impl Iterator for Nodes {
     type Item = Node;
@@ -470,7 +470,7 @@ impl Link {
 #[derive(Debug)]
 pub struct Links(Server);
 
-forward_raw_fd_traits!(Links => Server);
+impl_raw_fd_traits! { Links(Server) }
 
 impl Iterator for Links {
     type Item = Link;

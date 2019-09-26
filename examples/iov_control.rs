@@ -24,7 +24,7 @@ fn main() -> Fallible<()> {
                 io::IoSliceMut::new(&mut data[..]),
             ];
 
-            let (len, peer, service) = rdm.recv_vectored(&mut iov[..])?;
+            let (len, peer, service) = rdm.recv_from_vectored(&mut iov[..])?;
 
             println!("Server received {} bytes", len);
             if let Some(service) = service {
@@ -54,7 +54,7 @@ fn main() -> Fallible<()> {
             let data = b"DDDDDDD";
             let iov = [io::IoSlice::new(header), io::IoSlice::new(data)];
 
-            rdm.send_vectored(&iov[..], addr)?;
+            rdm.send_to_vectored(&iov[..], addr)?;
 
             Ok(())
         });

@@ -12,7 +12,7 @@ use mio::{
 };
 use structopt::StructOpt;
 
-use tipc::{Join, Recv, RecvMsg, ServiceAddr, SocketAddr, Type, Visibility::Cluster};
+use tipc::{Join, Recv, RecvMsg, ServiceAddr, SocketAddr, Type};
 
 const SERVICE_TYPE: Type = 4711;
 const BUF_LEN: usize = 66000;
@@ -297,7 +297,7 @@ fn main() -> Fallible<()> {
             Join::empty()
         };
 
-    let rdm = rdm.join(group, Cluster, flags).context("join group")?;
+    let rdm = rdm.join(group, flags).context("join group")?;
 
     println!("Joined as member {} at socket {}", group, rdm.local_addr()?);
 

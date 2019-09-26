@@ -31,7 +31,7 @@ where
     println!(
         "Bound {} socket {} to {}",
         name,
-        s.local_addr().unwrap(),
+        s.as_ref().local_addr().unwrap(),
         addr
     );
 

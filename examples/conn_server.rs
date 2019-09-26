@@ -12,7 +12,7 @@ const BUF_SZ: usize = 40;
 fn main() -> Fallible<()> {
     println!("****** TIPC connection demo server started ******");
 
-    let listener = tipc::bind::<SeqPacket, _>((SERVER_TYPE, SERVER_INST, Zone))?.listen()?;
+    let listener = tipc::bind::<SeqPacket, _>(((SERVER_TYPE, SERVER_INST), Zone))?.listen()?;
 
     let _ = crossbeam::scope(|s| {
         for (id, peer) in listener.incoming().enumerate() {

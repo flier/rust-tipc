@@ -328,6 +328,12 @@ impl From<SocketAddr> for ffi::sockaddr_tipc {
 
 impl From<ServiceAddr> for ffi::sockaddr_tipc {
     fn from(addr: ServiceAddr) -> ffi::sockaddr_tipc {
+        (addr, Scope::Global).into()
+    }
+}
+
+impl From<(ServiceAddr, Scope)> for ffi::sockaddr_tipc {
+    fn from((addr, scope): (ServiceAddr, Scope)) -> ffi::sockaddr_tipc {
         let mut sa = ffi::sockaddr_tipc {
             family: libc::AF_TIPC as u16,
             addrtype: TIPC_SERVICE_ADDR,
@@ -335,15 +341,23 @@ impl From<ServiceAddr> for ffi::sockaddr_tipc {
         };
 
         sa.addr.name.name = addr.into();
+        sa.addr.name.domain = scope.into();
         sa
     }
 }
 
 impl From<ServiceRange> for ffi::sockaddr_tipc {
     fn from(addr: ServiceRange) -> ffi::sockaddr_tipc {
+        (addr, Visibility::Zone).into()
+    }
+}
+
+impl From<(ServiceRange, Visibility)> for ffi::sockaddr_tipc {
+    fn from((addr, visibility): (ServiceRange, Visibility)) -> ffi::sockaddr_tipc {
         let mut sa = ffi::sockaddr_tipc {
             family: libc::AF_TIPC as u16,
             addrtype: TIPC_SERVICE_RANGE,
+            scope: visibility as i8,
             ..Default::default()
         };
 

@@ -3,7 +3,7 @@ use core::iter;
 use core::marker::PhantomData;
 use core::mem::{self, MaybeUninit};
 use core::ops::Deref;
-use core::ops::Range;
+use core::option::IntoIter;
 use core::ptr;
 use core::ptr::NonNull;
 use core::slice;
@@ -13,10 +13,10 @@ use std::io;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
 use bitflags::bitflags;
-use failure::{format_err, Error, Fail};
+use failure::{err_msg, format_err, Error, Fail};
 
 use crate::{
-    addr::{Instance, ServiceAddr, ServiceRange, SocketAddr, Type, Visibility, TIPC_ADDR_MCAST},
+    addr::{ServiceAddr, ServiceRange, SocketAddr, Visibility, TIPC_ADDR_MCAST},
     raw as ffi, Scope,
 };
 
@@ -24,6 +24,13 @@ const TRUE: i32 = 1;
 const FALSE: i32 = 0;
 
 const MAX_MSG_SIZE: usize = 1024;
+
+fn addr_not_available() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::AddrNotAvailable,
+        err_msg("address not available"),
+    )
+}
 
 /// Message importance levels
 #[repr(u32)]
@@ -37,41 +44,38 @@ pub enum Importance {
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! forward_raw_fd_traits {
-    ($name:ident <$tmpl:ident> => $inner:ident) => {
-        impl<$tmpl> AsRawFd for $name<$tmpl> {
+macro_rules! impl_raw_fd_traits {
+    ($name:ident <$param:ident> ( $inner:ident )) => {
+        impl<$param> AsRawFd for $name<$param> {
             fn as_raw_fd(&self) -> RawFd {
                 self.0.as_raw_fd()
             }
         }
 
-        impl<$tmpl> FromRawFd for $name<$tmpl> {
+        impl<$param> FromRawFd for $name<$param> {
             unsafe fn from_raw_fd(fd: RawFd) -> Self {
                 Self($inner::from_raw_fd(fd), PhantomData)
             }
         }
 
-        impl<$tmpl> IntoRawFd for $name<$tmpl> {
+        impl<$param> IntoRawFd for $name<$param> {
             fn into_raw_fd(self) -> RawFd {
                 self.0.into_raw_fd()
             }
         }
 
-        impl<$tmpl> Deref for $name<$tmpl> {
+        impl<$param> Deref for $name<$param> {
             type Target = RawFd;
 
             fn deref(&self) -> &Self::Target {
                 &self.0
             }
         }
-
-        impl<$tmpl> AsRef<$inner> for $name<$tmpl> {
-            fn as_ref(&self) -> &$inner {
-                &self.0
-            }
-        }
     };
-    ($name:ident => $inner:ident) => {
+    ($name:ident <$param:ident>) => {
+        impl_raw_fd_traits! { $name<$param>(Socket) }
+    };
+    ( $name:ident ( $inner:ident ) ) => {
         impl AsRawFd for $name {
             fn as_raw_fd(&self) -> RawFd {
                 self.0.as_raw_fd()
@@ -97,10 +101,33 @@ macro_rules! forward_raw_fd_traits {
                 &self.0
             }
         }
+    };
+    ($name:ident) => {
+        impl_raw_fd_traits! { $name(Socket) }
+    };
+}
 
-        impl AsRef<$inner> for $name {
-            fn as_ref(&self) -> &$inner {
+#[doc(hidden)]
+#[macro_export]
+macro_rules! impl_socket_wrapped {
+    ($wrapped:ident) => {
+        impl Wrapped for $wrapped {}
+
+        impl AsRef<Socket> for $wrapped {
+            fn as_ref(&self) -> &Socket {
                 &self.0
+            }
+        }
+
+        impl From<Socket> for $wrapped {
+            fn from(sock: Socket) -> Self {
+                Self(sock)
+            }
+        }
+
+        impl From<$wrapped> for Socket {
+            fn from(wrapped: $wrapped) -> Self {
+                wrapped.0
             }
         }
     };
@@ -110,7 +137,7 @@ macro_rules! forward_raw_fd_traits {
 pub fn bind<T, A>(addr: A) -> io::Result<Bound<T>>
 where
     T: Bindable,
-    A: ToBindAddr,
+    A: ToServiceRanges,
 {
     T::builder()?.bind(addr)
 }
@@ -119,7 +146,7 @@ where
 pub fn connect<T, A>(addr: A) -> io::Result<Connected<T>>
 where
     T: Connectable,
-    A: ToConnectAddr,
+    A: ToServiceAddrs,
 {
     T::builder()?.connect(addr)
 }
@@ -128,23 +155,10 @@ where
 pub fn connect_timeout<T, A>(addr: A, timeout: Duration) -> io::Result<Connected<T>>
 where
     T: Connectable,
-    A: ToConnectAddr,
+    A: ToServiceAddrs,
 {
     T::builder()?.connect_timeout(timeout)?.connect(addr)
 }
-
-/// A bindable TIPC socket.
-pub trait Bindable: Buildable + AsRef<Socket> {}
-
-impl Bindable for Stream {}
-impl Bindable for SeqPacket {}
-impl Bindable for Datagram {}
-
-/// A connectable TIPC socket.
-pub trait Connectable: Buildable + AsRef<Socket> {}
-
-impl Connectable for Stream {}
-impl Connectable for SeqPacket {}
 
 /// A buildable TIPC socket.
 pub trait Buildable: From<Builder<Self>> + Sized {
@@ -170,6 +184,22 @@ impl Buildable for Datagram {
     }
 }
 
+/// A wrapped TIPC socket.
+pub trait Wrapped: AsRef<Socket> + From<Socket> + Into<Socket> {}
+
+/// A bindable TIPC socket.
+pub trait Bindable: Buildable + Wrapped {}
+
+impl Bindable for Stream {}
+impl Bindable for SeqPacket {}
+impl Bindable for Datagram {}
+
+/// A connectable TIPC socket.
+pub trait Connectable: Buildable + Wrapped {}
+
+impl Connectable for Stream {}
+impl Connectable for SeqPacket {}
+
 /// An "in progress" TIPC socket which has not yet been connected or listened.
 ///
 /// Allows configuration of a socket before one of these operations is executed.
@@ -177,7 +207,7 @@ impl Buildable for Datagram {
 #[derive(Debug)]
 pub struct Builder<T>(Socket, PhantomData<T>);
 
-forward_raw_fd_traits!(Builder<T> => Socket);
+impl_raw_fd_traits!(Builder<T>);
 
 impl Builder<Datagram> {
     /// Constructs a new `Builder` with the `AF_TIPC` domain, the `SOCK_RDM` type.
@@ -241,7 +271,7 @@ impl<T> Builder<T> {
     /// Binds this socket to the specified address.
     pub fn bind<A>(self, addr: A) -> io::Result<Bound<T>>
     where
-        A: ToBindAddr,
+        A: ToServiceRanges,
         T: Bindable,
     {
         self.0.bind(addr).map(|_: ()| Bound(T::from(self)))
@@ -253,7 +283,7 @@ impl<T> Builder<T> {
     /// and also applies filters to only receive data from the specified address.
     pub fn connect<A>(self, addr: A) -> io::Result<Connected<T>>
     where
-        A: ToConnectAddr,
+        A: ToServiceAddrs,
         T: Connectable,
     {
         self.0.connect(addr).map(|_: ()| Connected(T::from(self)))
@@ -308,25 +338,20 @@ impl<T> Bound<T>
 where
     T: AsRef<Socket>,
 {
-    /// Returns the address of the local half of this TIPC socket.
-    pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        self.0.as_ref().local_addr()
-    }
-
     /// Binds this socket to the specified address.
-    pub fn bind<A: ToBindAddr>(self, addr: A) -> io::Result<Self> {
-        self.0.as_ref().bind(addr).map(|_: ()| self)
+    pub fn bind<A: ToServiceRanges>(&self, addr: A) -> io::Result<()> {
+        self.0.as_ref().bind(addr)
     }
 
     /// Unbinds this socket from the specified address.
-    pub fn unbind<A: Into<ServiceRange>>(self, service_range: A) -> io::Result<Self> {
-        self.0.as_ref().unbind(service_range).map(|_: ()| self)
+    pub fn unbind<A: ToServiceRanges>(self, addr: A) -> io::Result<()> {
+        self.0.as_ref().unbind(addr)
     }
 
     /// Mark a socket as ready to accept incoming connection requests using accept()
     pub fn listen(self) -> io::Result<Listener<T>>
     where
-        T: Connectable + Into<Socket>,
+        T: Connectable,
     {
         self.0
             .as_ref()
@@ -340,11 +365,11 @@ where
 #[derive(Debug)]
 pub struct Listener<T>(Socket, PhantomData<T>);
 
-forward_raw_fd_traits!(Listener<T> => Socket);
+impl_raw_fd_traits!(Listener<T>);
 
 impl<T> From<T> for Listener<T>
 where
-    T: Connectable + Into<Socket>,
+    T: Connectable,
 {
     fn from(sock: T) -> Self {
         Self(sock.into(), PhantomData)
@@ -365,7 +390,7 @@ impl<T> Listener<T> {
     /// Accept a new incoming connection from this listener.
     pub fn accept(&self) -> io::Result<(Connected<T>, SocketAddr)>
     where
-        T: Connectable + FromRawFd,
+        T: Connectable,
     {
         let mut sa = MaybeUninit::<ffi::sockaddr_tipc>::uninit();
         let mut len = mem::size_of::<ffi::sockaddr_tipc>() as u32;
@@ -375,7 +400,7 @@ impl<T> Listener<T> {
                 .into_result()
                 .map(|sd| {
                     (
-                        Connected(T::from_raw_fd(sd)),
+                        Connected(Socket::from_raw_fd(sd).into()),
                         sa.assume_init().addr.id.into(),
                     )
                 })
@@ -400,7 +425,7 @@ pub struct Incoming<'a, T> {
 
 impl<'a, T> Iterator for Incoming<'a, T>
 where
-    T: Connectable + FromRawFd,
+    T: Connectable,
 {
     type Item = io::Result<Connected<T>>;
 
@@ -480,23 +505,12 @@ where
 #[derive(Debug)]
 pub struct Stream(Socket);
 
-forward_raw_fd_traits!(Stream => Socket);
-
-impl From<Stream> for Socket {
-    fn from(stream: Stream) -> Self {
-        stream.0
-    }
-}
-
-impl From<Socket> for Stream {
-    fn from(socket: Socket) -> Self {
-        Stream(socket)
-    }
-}
+impl_raw_fd_traits!(Stream);
+impl_socket_wrapped!(Stream);
 
 impl Stream {
     /// Opens a TIPC connection to a remote host.
-    pub fn connect<A: ToConnectAddr>(self, addr: A) -> io::Result<Connected<Self>> {
+    pub fn connect<A: ToServiceAddrs>(self, addr: A) -> io::Result<Connected<Self>> {
         self.0.connect(addr)?;
         Ok(Connected(self))
     }
@@ -562,23 +576,12 @@ impl io::Write for Connected<Stream> {
 #[derive(Debug)]
 pub struct SeqPacket(Socket);
 
-forward_raw_fd_traits!(SeqPacket => Socket);
-
-impl From<SeqPacket> for Socket {
-    fn from(seq_packet: SeqPacket) -> Self {
-        seq_packet.0
-    }
-}
-
-impl From<Socket> for SeqPacket {
-    fn from(socket: Socket) -> Self {
-        SeqPacket(socket)
-    }
-}
+impl_raw_fd_traits!(SeqPacket);
+impl_socket_wrapped!(SeqPacket);
 
 impl SeqPacket {
     /// Opens a TIPC connection to a remote host.
-    pub fn connect<A: ToConnectAddr>(self, addr: A) -> io::Result<Connected<Self>> {
+    pub fn connect<A: ToServiceAddrs>(self, addr: A) -> io::Result<Connected<Self>> {
         self.0.connect(addr)?;
         Ok(Connected(self))
     }
@@ -615,8 +618,19 @@ impl SeqPacket {
         self.0.recv_from(buf, Recv::empty())
     }
 
+    /// Receives a single datagram message on the socket, without removing it from the queue.
+    ///
+    /// On success, returns the number of bytes read and the origin.
+    pub fn peek_from<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<(usize, SocketAddr)> {
+        self.0.recv_from(buf, Recv::PEEK)
+    }
+
     /// Sends data on the socket to the given address. On success, returns the number of bytes written.
-    pub fn send_to<T: AsRef<[u8]>, A: ToSendToAddr>(&self, buf: T, dst: A) -> io::Result<usize> {
+    pub fn send_to<T, A>(&self, buf: T, dst: A) -> io::Result<usize>
+    where
+        T: AsRef<[u8]>,
+        A: ToSocketAddrs,
+    {
         self.0.send_to(buf, dst, Send::empty())
     }
 }
@@ -626,25 +640,14 @@ impl SeqPacket {
 #[derive(Debug)]
 pub struct Datagram(Socket);
 
-forward_raw_fd_traits!(Datagram => Socket);
-
-impl From<Datagram> for Socket {
-    fn from(datagram: Datagram) -> Self {
-        datagram.0
-    }
-}
-
-impl From<Socket> for Datagram {
-    fn from(socket: Socket) -> Self {
-        Datagram(socket)
-    }
-}
+impl_raw_fd_traits!(Datagram);
+impl_socket_wrapped!(Datagram);
 
 impl Datagram {
     /// Binds this socket to the specified address.
-    pub fn bind<A>(self, addr: A) -> io::Result<Bound<Datagram>>
+    pub fn bind<A>(self, addr: A) -> io::Result<Bound<Self>>
     where
-        A: ToBindAddr,
+        A: ToServiceRanges,
     {
         self.0.bind(addr).map(|_: ()| Bound(self))
     }
@@ -685,15 +688,22 @@ impl Datagram {
         self.0.recv_from(buf, Recv::empty())
     }
 
+    /// Receives a single datagram message on the socket, without removing it from the queue.
+    ///
+    /// On success, returns the number of bytes read and the origin.
+    pub fn peek_from<T: AsMut<[u8]>>(&self, buf: T) -> io::Result<(usize, SocketAddr)> {
+        self.0.recv_from(buf, Recv::PEEK)
+    }
+
     /// Like `recv_from`, except that it receives into a slice of buffers.
     ///
     /// Data is copied to fill each buffer in order, with the final buffer written to possibly being only partially filled.
     /// This method must behave as a single call to `recv_from` with the buffers concatenated would.
-    pub fn recv_vectored(
+    pub fn recv_from_vectored(
         &self,
         bufs: &mut [io::IoSliceMut],
     ) -> io::Result<(usize, SocketAddr, Option<ServiceRange>)> {
-        self.0.recv_vectored(bufs, Recv::empty())
+        self.0.recv_from_vectored(bufs, Recv::empty())
     }
 
     /// Attempt to send a message from the socket to the specified destination.
@@ -705,7 +715,14 @@ impl Datagram {
     /// - If the destination is a service range, the message is a multicast to all matching sockets.
     ///
     /// Note however that the rules for what is a match differ between datagram and group messaging.
-    pub fn send_to<T: AsRef<[u8]>, A: ToSendToAddr>(&self, buf: T, dst: A) -> io::Result<usize> {
+    ///
+    /// It is possible for addr to yield multiple addresses,
+    /// but `send_to` will only send data to the first address yielded by addr.
+    pub fn send_to<T, A>(&self, buf: T, dst: A) -> io::Result<usize>
+    where
+        T: AsRef<[u8]>,
+        A: ToSocketAddrs,
+    {
         self.0.send_to(buf, dst, Send::empty())
     }
 
@@ -713,21 +730,16 @@ impl Datagram {
     ///
     /// Data is copied to from each buffer in order, with the final buffer read from possibly being only partially consumed.
     /// This method must behave as a call to `send_to` with the buffers concatenated would.
-    pub fn send_vectored<A>(&self, bufs: &[io::IoSlice], addr: A) -> io::Result<usize>
+    pub fn send_to_vectored<A>(&self, bufs: &[io::IoSlice], addr: A) -> io::Result<usize>
     where
-        A: ToSendToAddr,
+        A: ToSocketAddrs,
     {
-        self.0.send_vectored(bufs, addr, Send::empty())
+        self.0.send_to_vectored(bufs, addr, Send::empty())
     }
 
     /// Join a communication group.
-    pub fn join(
-        self,
-        service: ServiceAddr,
-        visibility: Visibility,
-        flags: Join,
-    ) -> io::Result<Group<Self>> {
-        self.0.join(service, visibility, flags)?;
+    pub fn join<A: ToServiceAddrs>(self, addr: A, flags: Join) -> io::Result<Group<Self>> {
+        self.0.join(addr, flags)?;
 
         Ok(Group(self))
     }
@@ -750,19 +762,9 @@ impl<T> Group<T>
 where
     T: AsRef<Socket>,
 {
-    /// Join a communication group.
-    pub fn join(
-        &self,
-        service: ServiceAddr,
-        visibility: Visibility,
-        flags: Join,
-    ) -> io::Result<()> {
-        self.0.as_ref().join(service, visibility, flags)
-    }
-
     /// Leave a communication group.
-    pub fn leave(&self) -> io::Result<()> {
-        self.0.as_ref().leave()
+    pub fn leave(self) -> io::Result<T> {
+        self.0.as_ref().leave().map(|_| self.0)
     }
 
     /// Sends a broadcast message to all matching sockets.
@@ -774,7 +776,7 @@ where
     pub fn multicast<B, A>(&self, buf: B, addr: A) -> io::Result<usize>
     where
         B: AsRef<[u8]>,
-        A: ToSendToAddr,
+        A: ToSocketAddrs,
     {
         self.0.as_ref().mcast(buf, addr, Send::empty())
     }
@@ -782,13 +784,12 @@ where
     /// Sends a anycast message to all matching sockets.
     ///
     /// The lookup algorithm applies the regular round-robin algorithm
-    pub fn anycast<B: AsRef<[u8]>, A: ToSendToAddr>(&self, buf: B, dst: A) -> io::Result<usize> {
+    pub fn anycast<B, A>(&self, buf: B, dst: A) -> io::Result<usize>
+    where
+        B: AsRef<[u8]>,
+        A: ToSocketAddrs,
+    {
         self.0.as_ref().send_to(buf, dst, Send::empty())
-    }
-
-    /// Consumes the `Group`, returning the underlying value.
-    pub fn into_inner(self) -> T {
-        self.0
     }
 }
 
@@ -993,33 +994,41 @@ impl Socket {
     }
 
     /// Binds this socket to the specified address.
-    pub fn bind<A: ToBindAddr>(&self, addr: A) -> io::Result<()> {
-        let sa: ffi::sockaddr_tipc = addr.to_bind_addr();
+    pub fn bind<A: ToServiceRanges>(&self, addr: A) -> io::Result<()> {
+        for addr in addr.to_service_ranges()? {
+            let sa: ffi::sockaddr_tipc = addr.into();
 
-        unsafe {
-            libc::bind(
-                self.as_raw_fd(),
-                &sa as *const _ as *const _,
-                mem::size_of::<ffi::sockaddr_tipc>() as u32,
-            )
+            unsafe {
+                libc::bind(
+                    self.as_raw_fd(),
+                    &sa as *const _ as *const _,
+                    mem::size_of::<ffi::sockaddr_tipc>() as u32,
+                )
+            }
+            .into_result()?;
         }
-        .into_result()
+
+        Ok(())
     }
 
     /// Unbinds this socket from the specified address.
-    pub fn unbind<A: Into<ServiceRange>>(&self, service_range: A) -> io::Result<()> {
-        let mut sa: ffi::sockaddr_tipc = service_range.into().into();
+    pub fn unbind<A: ToServiceRanges>(&self, addr: A) -> io::Result<()> {
+        for addr in addr.to_service_ranges()? {
+            let mut sa: ffi::sockaddr_tipc = addr.into();
 
-        sa.scope = -1;
+            sa.scope = -1;
 
-        unsafe {
-            libc::bind(
-                self.as_raw_fd(),
-                &sa as *const _ as *const _,
-                mem::size_of::<ffi::sockaddr_tipc>() as u32,
-            )
+            unsafe {
+                libc::bind(
+                    self.as_raw_fd(),
+                    &sa as *const _ as *const _,
+                    mem::size_of::<ffi::sockaddr_tipc>() as u32,
+                )
+            }
+            .into_result()?;
         }
-        .into_result()
+
+        Ok(())
     }
 
     /// Mark a socket as ready to accept incoming connection requests using accept()
@@ -1031,17 +1040,27 @@ impl Socket {
     ///
     /// Connects this TIPC socket to a remote address, allowing the `send` and `recv` syscalls to be used to send data
     /// and also applies filters to only receive data from the specified address.
-    pub fn connect<A: ToConnectAddr>(&self, addr: A) -> io::Result<()> {
-        let sa: ffi::sockaddr_tipc = addr.to_connect_addr();
+    pub fn connect<A: ToServiceAddrs>(&self, addr: A) -> io::Result<()> {
+        let mut res = Err(addr_not_available());
 
-        unsafe {
-            libc::connect(
-                self.as_raw_fd(),
-                &sa as *const _ as *const _,
-                mem::size_of::<ffi::sockaddr_tipc>() as u32,
-            )
+        for addr in addr.to_service_addrs()? {
+            let sa: ffi::sockaddr_tipc = addr.into();
+
+            res = unsafe {
+                libc::connect(
+                    self.as_raw_fd(),
+                    &sa as *const _ as *const _,
+                    mem::size_of::<ffi::sockaddr_tipc>() as u32,
+                )
+            }
+            .into_result();
+
+            if res.is_ok() {
+                break;
+            }
         }
-        .into_result()
+
+        res
     }
 
     /// Shut down the read and write halves of this connection.
@@ -1071,14 +1090,18 @@ impl Socket {
     }
 
     /// Sends data on the socket to the given address. On success, returns the number of bytes written.
-    pub fn send_to<T: AsRef<[u8]>, A: ToSendToAddr>(
+    pub fn send_to<T: AsRef<[u8]>, A: ToSocketAddrs>(
         &self,
         buf: T,
         addr: A,
         flags: Send,
     ) -> io::Result<usize> {
         let buf = buf.as_ref();
-        let sa: ffi::sockaddr_tipc = addr.to_send_to_addr();
+        let sa: ffi::sockaddr_tipc = addr
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(addr_not_available)?
+            .into();
 
         unsafe {
             libc::sendto(
@@ -1097,10 +1120,14 @@ impl Socket {
     pub fn mcast<T, A>(&self, buf: T, addr: A, flags: Send) -> io::Result<usize>
     where
         T: AsRef<[u8]>,
-        A: ToSendToAddr,
+        A: ToSocketAddrs,
     {
         let buf = buf.as_ref();
-        let mut sa: ffi::sockaddr_tipc = addr.to_send_to_addr();
+        let mut sa: ffi::sockaddr_tipc = addr
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(addr_not_available)?
+            .into();
 
         sa.addrtype = TIPC_ADDR_MCAST as u8;
 
@@ -1121,11 +1148,20 @@ impl Socket {
     ///
     /// Data is copied to from each buffer in order, with the final buffer read from possibly being only partially consumed.
     /// This method must behave as a call to `send_to` with the buffers concatenated would.
-    pub fn send_vectored<A>(&self, bufs: &[io::IoSlice], addr: A, flags: Send) -> io::Result<usize>
+    pub fn send_to_vectored<A>(
+        &self,
+        bufs: &[io::IoSlice],
+        addr: A,
+        flags: Send,
+    ) -> io::Result<usize>
     where
-        A: ToSendToAddr,
+        A: ToSocketAddrs,
     {
-        let addr = addr.to_send_to_addr();
+        let addr = addr
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(addr_not_available)?
+            .into();
         let msg = libc::msghdr {
             msg_name: &addr as *const _ as *mut _,
             msg_namelen: mem::size_of::<ffi::sockaddr_tipc>() as u32,
@@ -1181,7 +1217,7 @@ impl Socket {
     ///
     /// Data is copied to fill each buffer in order, with the final buffer written to possibly being only partially filled.
     /// This method must behave as a single call to `recv_from` with the buffers concatenated would.
-    pub fn recv_vectored(
+    pub fn recv_from_vectored(
         &self,
         bufs: &mut [io::IoSliceMut],
         flags: Recv,
@@ -1318,16 +1354,15 @@ impl Socket {
     }
 
     /// Join a communication group.
-    pub fn join(
-        &self,
-        service: ServiceAddr,
-        visibility: Visibility,
-        flags: Join,
-    ) -> io::Result<()> {
+    pub fn join<A: ToServiceAddrs>(&self, addr: A, flags: Join) -> io::Result<()> {
+        let (service, scope) = addr
+            .to_service_addrs()?
+            .next()
+            .ok_or_else(addr_not_available)?;
         let req = ffi::tipc_group_req {
             type_: service.ty(),
             instance: service.instance(),
-            scope: visibility as u32,
+            scope: scope.visibility() as u32,
             flags: flags.bits(),
         };
 
@@ -1402,129 +1437,104 @@ unsafe fn cmsgs(msg: &libc::msghdr) -> impl Iterator<Item = (libc::c_int, libc::
     })
 }
 
-/// Conversion into a local address to bind.
-pub trait ToBindAddr {
-    /// Creates a `ffi::sockaddr_tipc` from the address.
-    fn to_bind_addr(&self) -> ffi::sockaddr_tipc;
+/// A trait for objects which can be converted or resolved to one or more `ServiceRange` values.
+pub trait ToServiceRanges {
+    /// Returned iterator over socket ranges which this type may correspond to.
+    type Iter: Iterator<Item = (ServiceRange, Visibility)>;
+
+    /// Converts this object to an iterator of resolved `ServiceRange`s.
+    ///
+    /// The returned iterator may not actually yield any values depending on the outcome of any resolution performed.
+    ///
+    /// Note that this function may block the current thread while resolution is performed.
+    fn to_service_ranges(&self) -> io::Result<Self::Iter>;
 }
 
-impl ToBindAddr for ServiceAddr {
-    fn to_bind_addr(&self) -> ffi::sockaddr_tipc {
-        (ServiceRange::from(*self), Visibility::Cluster).to_bind_addr()
-    }
-}
-impl ToBindAddr for ServiceRange {
-    fn to_bind_addr(&self) -> ffi::sockaddr_tipc {
-        (*self, Visibility::Cluster).to_bind_addr()
-    }
-}
-impl ToBindAddr for (ServiceRange, Visibility) {
-    fn to_bind_addr(&self) -> ffi::sockaddr_tipc {
-        let (service_range, visibility) = *self;
-        let mut sa: ffi::sockaddr_tipc = service_range.into();
-        sa.scope = visibility as i8;
-        sa
-    }
-}
-impl ToBindAddr for (Type, Instance, Visibility) {
-    fn to_bind_addr(&self) -> ffi::sockaddr_tipc {
-        let (ty, instance, visibility) = *self;
-        (ServiceRange::from((ty, instance)), visibility).to_bind_addr()
-    }
-}
-impl ToBindAddr for (Type, Instance) {
-    fn to_bind_addr(&self) -> ffi::sockaddr_tipc {
-        ServiceRange::from(*self).into()
-    }
-}
-impl ToBindAddr for (Type, Range<Instance>, Visibility) {
-    fn to_bind_addr(&self) -> ffi::sockaddr_tipc {
-        let (ty, service_range, visibility) = self;
-        (
-            ServiceRange::from((*ty, service_range.clone())),
-            *visibility,
-        )
-            .to_bind_addr()
-    }
-}
-impl ToBindAddr for (Type, Range<Instance>) {
-    fn to_bind_addr(&self) -> ffi::sockaddr_tipc {
-        ServiceRange::from(self.clone()).into()
-    }
-}
-impl ToBindAddr for (Type, Visibility) {
-    fn to_bind_addr(&self) -> ffi::sockaddr_tipc {
-        let (ty, visibility) = *self;
-        (ServiceRange::with_range(ty, ..), visibility).to_bind_addr()
-    }
-}
-impl ToBindAddr for Type {
-    fn to_bind_addr(&self) -> ffi::sockaddr_tipc {
-        ServiceRange::with_range(*self, ..).into()
-    }
-}
-
-/// Conversion into a remote address to connect.
-pub trait ToConnectAddr {
-    /// Creates a `ffi::sockaddr_tipc` from the address.
-    fn to_connect_addr(&self) -> ffi::sockaddr_tipc;
-}
-
-impl ToConnectAddr for ServiceAddr {
-    fn to_connect_addr(&self) -> ffi::sockaddr_tipc {
-        (*self, Scope::Global).to_connect_addr()
-    }
-}
-impl ToConnectAddr for (ServiceAddr, Scope) {
-    fn to_connect_addr(&self) -> ffi::sockaddr_tipc {
-        let (addr, scope) = *self;
-        let mut sa: ffi::sockaddr_tipc = addr.into();
-        sa.addr.name.domain = scope.into();
-        sa
-    }
-}
-impl ToConnectAddr for (Type, Instance) {
-    fn to_connect_addr(&self) -> ffi::sockaddr_tipc {
-        ServiceAddr::from(*self).into()
-    }
-}
-
-/// Conversion into a remote address to sends data to.
-///
-/// * If the destination is a socket address the message is unicast to that specific socket.
-/// * If the destination is a service address, it is an anycast to any matching destination.
-/// * If the destination is a service range, the message is a multicast to all matching sockets.
-pub trait ToSendToAddr {
-    /// Creates a `ffi::sockaddr_tipc` from the address.
-    fn to_send_to_addr(&self) -> ffi::sockaddr_tipc;
-}
-
-impl ToSendToAddr for SocketAddr {
-    fn to_send_to_addr(&self) -> ffi::sockaddr_tipc {
-        let mut sa: ffi::sockaddr_tipc = (*self).into();
-        sa.addr.name.domain = Scope::Global.into();
-        sa
-    }
-}
-impl ToSendToAddr for ServiceAddr {
-    fn to_send_to_addr(&self) -> ffi::sockaddr_tipc {
-        (*self, Scope::Global).to_send_to_addr()
-    }
-}
-impl ToSendToAddr for ServiceRange {
-    fn to_send_to_addr(&self) -> ffi::sockaddr_tipc {
-        (*self, Scope::Global).to_send_to_addr()
-    }
-}
-impl<T> ToSendToAddr for (T, Scope)
+impl<T> ToServiceRanges for (T, Visibility)
 where
-    T: Into<ffi::sockaddr_tipc> + Copy,
+    T: Into<ServiceRange> + Clone,
 {
-    fn to_send_to_addr(&self) -> ffi::sockaddr_tipc {
-        let (addr, scope) = *self;
-        let mut sa: ffi::sockaddr_tipc = addr.into();
-        sa.addr.name.domain = scope.into();
-        sa
+    type Iter = IntoIter<(ServiceRange, Visibility)>;
+
+    fn to_service_ranges(&self) -> io::Result<Self::Iter> {
+        let (service_range, visibility) = self.clone();
+
+        Ok(Some((service_range.into(), visibility)).into_iter())
+    }
+}
+
+impl<T> ToServiceRanges for T
+where
+    T: Into<ServiceRange> + Clone,
+{
+    type Iter = IntoIter<(ServiceRange, Visibility)>;
+
+    fn to_service_ranges(&self) -> io::Result<Self::Iter> {
+        Ok(Some((self.clone().into(), Visibility::Cluster)).into_iter())
+    }
+}
+
+/// A trait for objects which can be converted or resolved to one or more `ServiceAddr` values.
+pub trait ToServiceAddrs {
+    /// Returned iterator over socket addresses which this type may correspond to.
+    type Iter: Iterator<Item = (ServiceAddr, Scope)>;
+
+    /// Converts this object to an iterator of resolved `ServiceAddr`s.
+    ///
+    /// The returned iterator may not actually yield any values depending on the outcome of any resolution performed.
+    ///
+    /// Note that this function may block the current thread while resolution is performed.
+    fn to_service_addrs(&self) -> io::Result<Self::Iter>;
+}
+
+impl<T> ToServiceAddrs for T
+where
+    T: Into<ServiceAddr> + Clone,
+{
+    type Iter = IntoIter<(ServiceAddr, Scope)>;
+
+    fn to_service_addrs(&self) -> io::Result<Self::Iter> {
+        Ok(Some((self.clone().into(), Scope::Global)).into_iter())
+    }
+}
+
+impl<T> ToServiceAddrs for (T, Scope)
+where
+    T: Into<ServiceAddr> + Clone,
+{
+    type Iter = IntoIter<(ServiceAddr, Scope)>;
+
+    fn to_service_addrs(&self) -> io::Result<Self::Iter> {
+        let (service_addr, scope) = self.clone();
+
+        Ok(Some((service_addr.clone().into(), scope)).into_iter())
+    }
+}
+
+/// A trait for objects which can be converted or resolved to one or more `ffi::sockaddr_tipc` values.
+pub trait ToSocketAddrs {
+    /// The socket addresses
+    type Item: Into<ffi::sockaddr_tipc>;
+    /// Returned iterator over socket addresses which this type may correspond to.
+    type Iter: Iterator<Item = Self::Item>;
+
+    /// Converts this object to an iterator of resolved `ffi::sockaddr_tipc`s.
+    ///
+    /// The returned iterator may not actually yield any values depending on the outcome of any resolution performed.
+    ///
+    /// Note that this function may block the current thread while resolution is performed.
+    fn to_socket_addrs(&self) -> io::Result<Self::Iter>;
+}
+
+impl<T> ToSocketAddrs for T
+where
+    T: Into<ffi::sockaddr_tipc> + Clone,
+{
+    type Item = T;
+    type Iter = IntoIter<T>;
+
+    fn to_socket_addrs(&self) -> io::Result<Self::Iter> {
+        Ok(Some(self.clone()).into_iter())
     }
 }
 

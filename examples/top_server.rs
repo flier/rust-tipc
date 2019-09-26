@@ -14,7 +14,7 @@ fn main() -> Fallible<()> {
     let visibility = Zone;
 
     // Make server available
-    let mut rdm = tipc::rdm()?.bind((server_addr, visibility))?;
+    let rdm = tipc::rdm()?.bind((server_addr, visibility))?;
 
     println!(
         "Server: bound port A to {} scope {:?}",
@@ -22,7 +22,7 @@ fn main() -> Fallible<()> {
     );
 
     // Bind name a second time, to get a higher share of the calls
-    rdm = rdm.bind(server_addr)?;
+    rdm.bind(server_addr)?;
 
     println!(
         "Server: bound port A to name sequence {} scope {:?}",
@@ -33,7 +33,7 @@ fn main() -> Fallible<()> {
     let server_addr =
         ServiceRange::with_range(SERVER_TYPE, SERVER_INST_UPPER + 1..SERVER_INST_UPPER + 2);
 
-    let _rdm = rdm.bind(server_addr)?;
+    rdm.bind(server_addr)?;
 
     println!(
         "Server: bound port A to name sequence {} scope {:?}",

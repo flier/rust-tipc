@@ -14,7 +14,7 @@ const MAX_REC_SIZE: usize = 256;
 fn main() -> Fallible<()> {
     println!("****** TIPC stream demo server started ******");
 
-    let listener = tipc::bind::<Stream, _>((SERVER_TYPE, SERVER_INST, Zone))?.listen()?;
+    let listener = tipc::bind::<Stream, _>(((SERVER_TYPE, SERVER_INST), Zone))?.listen()?;
     let (mut peer, _addr) = listener.accept()?;
 
     let mut buf = [0; MAX_REC_SIZE];
