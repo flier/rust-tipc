@@ -17,7 +17,7 @@ fn main() -> Fallible<()> {
 
     let service_range: ServiceRange = (SERVER_TYPE, 0..100).into();
 
-    top_srv.subscribe(service_range, false, None, 0)?;
+    top_srv.subscribe(service_range)?;
 
     println!("Client: issued subscription to {}", service_range);
 
@@ -25,7 +25,7 @@ fn main() -> Fallible<()> {
 
     let service_range: ServiceRange = 0.into();
 
-    top_srv.subscribe(service_range, true, None, 0)?;
+    top_srv.subscribe(topo::Subscription::from(service_range).all())?;
 
     println!("Client: issued subscription to {}", service_range);
 

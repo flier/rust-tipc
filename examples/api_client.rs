@@ -174,13 +174,13 @@ fn main() -> Fallible<()> {
         PollOpt::empty(),
     )?;
     top_srv
-        .subscribe(RDM_SRV_TYPE, false, None, 0)
+        .subscribe(RDM_SRV_TYPE)
         .context("subscribe for RDM server")?;
     top_srv
-        .subscribe(STREAM_SRV_TYPE, false, None, 0)
+        .subscribe(STREAM_SRV_TYPE)
         .context("subscribe for STREAM server")?;
     top_srv
-        .subscribe(SEQPKT_SRV_TYPE, false, None, 0)
+        .subscribe(SEQPKT_SRV_TYPE)
         .context("subscribe for SEQPACKET server")?;
 
     let mut events = Events::with_capacity(16);

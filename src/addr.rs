@@ -9,7 +9,7 @@ use std::sync::Once;
 
 use failure::Fail;
 
-use crate::{raw as ffi, sock};
+use crate::{ffi, sock};
 
 pub const TIPC_ADDR_MCAST: i32 = 1;
 pub const TIPC_SERVICE_RANGE: u8 = 1;
@@ -21,6 +21,53 @@ pub type Type = u32;
 
 /// A Service Instance number
 pub type Instance = u32;
+
+/// A physical entity within a network is identified internally by a TIPC Network Address.
+#[repr(transparent)]
+#[derive(Clone, Copy, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NetworkAddr(u32);
+
+impl From<u32> for NetworkAddr {
+    fn from(n: u32) -> Self {
+        NetworkAddr(n)
+    }
+}
+
+impl From<NetworkAddr> for u32 {
+    fn from(addr: NetworkAddr) -> Self {
+        addr.0
+    }
+}
+
+impl PartialEq<u32> for NetworkAddr {
+    fn eq(&self, other: &u32) -> bool {
+        self.0 == *other
+    }
+}
+
+impl NetworkAddr {
+    pub fn new(zone: u32, cluster: u32, node: u32) -> Self {
+        NetworkAddr((zone << ffi::TIPC_ZONE_OFFSET) | (cluster << ffi::TIPC_CLUSTER_OFFSET) | node)
+    }
+
+    pub fn zone(self) -> u32 {
+        self.0 >> ffi::TIPC_ZONE_OFFSET
+    }
+
+    pub fn cluster(self) -> u32 {
+        (self.0 & ffi::TIPC_CLUSTER_MASK) >> ffi::TIPC_CLUSTER_OFFSET
+    }
+
+    pub fn node(self) -> u32 {
+        self.0 & ffi::TIPC_NODE_MASK
+    }
+}
+
+impl fmt::Display for NetworkAddr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "<{}.{}.{}>", self.zone(), self.cluster(), self.node())
+    }
+}
 
 macro_rules! addr {
     (
@@ -36,7 +83,7 @@ macro_rules! addr {
     ) => {
         $(#[$outer])*
         #[repr(transparent)]
-        #[derive(Clone, Copy, Default, Hash, PartialEq)]
+        #[derive(Clone, Copy, Default, Hash, PartialEq, Eq, PartialOrd, Ord)]
         pub struct $name(ffi::$raw);
 
         impl $name {
@@ -162,6 +209,14 @@ impl<T: ToInstanceRange> From<(Type, T)> for ServiceRange {
 }
 
 impl ServiceRange {
+    pub const fn with_type(ty: Type) -> Self {
+        ServiceRange(ffi::tipc_name_seq {
+            type_: ty,
+            lower: u32::min_value(),
+            upper: u32::max_value(),
+        })
+    }
+
     pub fn with_range<T: ToInstanceRange>(ty: Type, range: T) -> Self {
         ServiceRange(ffi::tipc_name_seq {
             type_: ty,

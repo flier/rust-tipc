@@ -159,7 +159,7 @@ pub type __u32 = ::std::os::raw::c_uint;
 pub type __s64 = ::std::os::raw::c_longlong;
 pub type __u64 = ::std::os::raw::c_ulonglong;
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Hash, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct __kernel_fd_set {
     pub fds_bits: [::std::os::raw::c_ulong; 16usize],
 }
@@ -209,7 +209,7 @@ pub type __kernel_size_t = __kernel_ulong_t;
 pub type __kernel_ssize_t = __kernel_long_t;
 pub type __kernel_ptrdiff_t = __kernel_long_t;
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Hash, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct __kernel_fsid_t {
     pub val: [::std::os::raw::c_int; 2usize],
 }
@@ -254,7 +254,7 @@ pub type __be64 = __u64;
 pub type __sum16 = __u16;
 pub type __wsum = __u32;
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Hash, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct tipc_portid {
     pub ref_: __u32,
     pub node: __u32,
@@ -293,7 +293,7 @@ fn bindgen_test_layout_tipc_portid() {
     );
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Hash, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct tipc_name {
     pub type_: __u32,
     pub instance: __u32,
@@ -332,7 +332,7 @@ fn bindgen_test_layout_tipc_name() {
     );
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Hash, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct tipc_name_seq {
     pub type_: __u32,
     pub lower: __u32,
@@ -382,7 +382,7 @@ fn bindgen_test_layout_tipc_name_seq() {
     );
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Hash, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct tipc_subscr {
     pub seq: tipc_name_seq,
     pub timeout: __u32,
@@ -443,7 +443,7 @@ fn bindgen_test_layout_tipc_subscr() {
     );
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Hash, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct tipc_event {
     pub event: __u32,
     pub found_lower: __u32,
@@ -531,7 +531,7 @@ pub union sockaddr_tipc__bindgen_ty_1 {
     _bindgen_union_align: [u32; 3usize],
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Hash, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct sockaddr_tipc__bindgen_ty_1__bindgen_ty_1 {
     pub name: tipc_name,
     pub domain: __u32,
@@ -692,7 +692,7 @@ impl Default for sockaddr_tipc {
     }
 }
 #[repr(C)]
-#[derive(Debug, Default, Copy, Clone, Hash, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Hash, PartialOrd, Ord, PartialEq, Eq)]
 pub struct tipc_group_req {
     pub type_: __u32,
     pub instance: __u32,

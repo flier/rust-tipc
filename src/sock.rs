@@ -9,6 +9,7 @@ use core::ptr::NonNull;
 use core::slice;
 use core::time::Duration;
 
+use std::ffi::CStr;
 use std::io;
 use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 
@@ -16,14 +17,17 @@ use bitflags::bitflags;
 use failure::{err_msg, format_err, Error, Fail};
 
 use crate::{
-    addr::{ServiceAddr, ServiceRange, SocketAddr, Visibility, TIPC_ADDR_MCAST},
-    raw as ffi, Scope,
+    addr::{Instance, Scope, ServiceAddr, ServiceRange, SocketAddr, Visibility, TIPC_ADDR_MCAST},
+    ffi,
 };
 
 const TRUE: i32 = 1;
 const FALSE: i32 = 0;
 
 const MAX_MSG_SIZE: usize = 1024;
+
+/// The bearer identity.
+pub type BearerId = u32;
 
 fn addr_not_available() -> io::Error {
     io::Error::new(
@@ -1372,6 +1376,39 @@ impl Socket {
     /// Leave a communication group.
     pub fn leave(&self) -> io::Result<()> {
         self.set_sock_opt(libc::SOL_TIPC, ffi::TIPC_GROUP_LEAVE, ())
+    }
+
+    /// Retrieve a node identity.
+    pub fn node_id(&self, peer: Instance) -> io::Result<String> {
+        let mut req = ffi::tipc_sioc_nodeid_req {
+            peer,
+            ..Default::default()
+        };
+
+        unsafe { libc::ioctl(self.as_raw_fd(), u64::from(ffi::SIOCGETNODEID), &mut req) }
+            .into_result()?;
+
+        Ok(unsafe { CStr::from_ptr(req.node_id.as_ptr() as *const _) }
+            .to_str()
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+            .to_owned())
+    }
+
+    /// Retrieve a link name.
+    pub fn link_name(&self, peer: Instance, bearer_id: BearerId) -> io::Result<String> {
+        let mut req = ffi::tipc_sioc_ln_req {
+            peer,
+            bearer_id,
+            ..Default::default()
+        };
+
+        unsafe { libc::ioctl(self.as_raw_fd(), u64::from(ffi::SIOCGETLINKNAME), &mut req) }
+            .into_result()?;
+
+        Ok(unsafe { CStr::from_ptr(req.linkname.as_ptr() as *const _) }
+            .to_str()
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?
+            .to_owned())
     }
 }
 
