@@ -353,10 +353,10 @@ impl SocketAddr {
     }
 }
 
-static mut OWN_NODE: u32 = 0;
-static OWN_NODE_INIT: Once = Once::new();
-
 pub fn own_node() -> u32 {
+    static mut OWN_NODE: u32 = 0;
+    static OWN_NODE_INIT: Once = Once::new();
+
     unsafe {
         OWN_NODE_INIT.call_once(|| {
             OWN_NODE = sock::new(libc::SOCK_RDM)
@@ -403,7 +403,7 @@ impl From<(ServiceAddr, Scope)> for ffi::sockaddr_tipc {
 
 impl From<ServiceRange> for ffi::sockaddr_tipc {
     fn from(addr: ServiceRange) -> ffi::sockaddr_tipc {
-        (addr, Visibility::Zone).into()
+        (addr, Visibility::default()).into()
     }
 }
 
@@ -534,7 +534,7 @@ impl Scope {
     pub fn visibility(self) -> Visibility {
         match self {
             Scope::Node(node) if node.get() == own_node() => Visibility::Node,
-            _ => Visibility::Cluster,
+            _ => Visibility::default(),
         }
     }
 }
@@ -543,9 +543,18 @@ impl Scope {
 #[repr(i8)]
 #[derive(Clone, Copy, Debug, PartialEq, Hash)]
 pub enum Visibility {
+    /// Visibility within whole own zone
     Zone = ffi::TIPC_ZONE_SCOPE as i8,
+    /// Visibility within whole own cluster
     Cluster = ffi::TIPC_CLUSTER_SCOPE as i8,
+    /// Visibility limited to own node
     Node = ffi::TIPC_NODE_SCOPE as i8,
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        Visibility::Cluster
+    }
 }
 
 #[cfg(test)]

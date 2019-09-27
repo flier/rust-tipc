@@ -2,7 +2,7 @@ use std::str;
 
 use failure::Fallible;
 
-use tipc::{Instance, SeqPacket, Type, Visibility::*};
+use tipc::{Instance, SeqPacket, Type, Visibility::Zone};
 
 const SERVER_TYPE: Type = 18888;
 const SERVER_INST: Instance = 17;
