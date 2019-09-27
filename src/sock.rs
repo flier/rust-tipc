@@ -29,7 +29,7 @@ const MAX_MSG_SIZE: usize = 1024;
 /// The bearer identity.
 pub type BearerId = u32;
 
-fn addr_not_available() -> io::Error {
+pub fn addr_not_available() -> io::Error {
     io::Error::new(
         io::ErrorKind::AddrNotAvailable,
         err_msg("address not available"),

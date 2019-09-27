@@ -141,7 +141,7 @@ fn main() -> Fallible<()> {
 
     println!("Waiting for Service {}", srv);
 
-    topo::wait(srv, Scope::Global, None)?;
+    tipc::wait(srv, None)?;
 
     let poll = Poll::new()?;
 

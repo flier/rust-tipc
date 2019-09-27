@@ -2,7 +2,7 @@ use std::str;
 
 use failure::Fallible;
 
-use tipc::{seq_packet, topo, Instance, Scope, SeqPacket, ServiceAddr, Type};
+use tipc::{seq_packet, Instance, SeqPacket, ServiceAddr, Type};
 
 const SERVER_TYPE: Type = 18888;
 const SERVER_INST: Instance = 17;
@@ -12,7 +12,7 @@ const BUF_SZ: usize = 40;
 fn main() -> Fallible<()> {
     println!("****** TIPC connection demo client started ******\n");
 
-    topo::wait((SERVER_TYPE, SERVER_INST), Scope::Global, None)?;
+    tipc::wait((SERVER_TYPE, SERVER_INST), None)?;
 
     let server_addr = ServiceAddr::new(SERVER_TYPE, SERVER_INST);
 

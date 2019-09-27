@@ -38,3 +38,4 @@ pub use sock::{
     RecvMsg, Rejected, Send, SeqPacket, Socket, Stream, ToServiceAddrs, ToServiceRanges,
     ToSocketAddrs, Wrapped,
 };
+pub use topo::wait;

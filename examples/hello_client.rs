@@ -2,7 +2,7 @@ use std::str;
 
 use failure::Fallible;
 
-use tipc::{topo, Instance, Scope, ServiceAddr, Type};
+use tipc::{Instance, ServiceAddr, Type};
 
 const SERVER_TYPE: Type = 18888;
 const SERVER_INST: Instance = 17;
@@ -12,7 +12,7 @@ const BUF_SIZE: usize = 40;
 fn main() -> Fallible<()> {
     println!("****** TIPC hello world client started ******");
 
-    topo::wait((SERVER_TYPE, SERVER_INST), Scope::Global, None)?;
+    tipc::wait((SERVER_TYPE, SERVER_INST), None)?;
 
     let srv = ServiceAddr::new(SERVER_TYPE, SERVER_INST);
     let rdm = tipc::rdm()?;

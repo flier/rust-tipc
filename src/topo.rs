@@ -10,7 +10,7 @@ use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use crate::{
     addr::{Scope, ServiceAddr, ServiceRange, SocketAddr},
     ffi, impl_raw_fd_traits,
-    sock::{self, BearerId, IntoResult, Socket},
+    sock::{self, addr_not_available, BearerId, IntoResult, Socket, ToServiceAddrs},
     Instance,
 };
 
@@ -25,15 +25,15 @@ pub fn connect(scope: Scope) -> io::Result<Server> {
 }
 
 /// Waits the service ready.
-pub fn wait<A: Into<ServiceAddr>>(
-    service: A,
-    scope: Scope,
-    timeout: Option<Duration>,
-) -> io::Result<bool> {
+pub fn wait<A: ToServiceAddrs>(addr: A, timeout: Option<Duration>) -> io::Result<bool> {
+    let (addr, scope) = addr
+        .to_service_addrs()?
+        .next()
+        .ok_or_else(addr_not_available)?;
     let srv = connect(scope)?;
 
     srv.subscribe(Subscription {
-        service: service.into().into(),
+        service: addr.into(),
         filter: Filter::Edge,
         timeout,
         userdata: 0,

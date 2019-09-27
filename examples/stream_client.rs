@@ -4,7 +4,7 @@ use std::mem;
 
 use failure::Fallible;
 
-use tipc::{topo, Instance, Scope, ServiceAddr, Stream, Type};
+use tipc::{Instance, ServiceAddr, Stream, Type};
 
 const SERVER_TYPE: Type = 18888;
 const SERVER_INST: Instance = 17;
@@ -17,7 +17,7 @@ fn main() -> Fallible<()> {
 
     let addr = ServiceAddr::new(SERVER_TYPE, SERVER_INST);
 
-    topo::wait(addr, Scope::Global, None)?;
+    tipc::wait(addr, None)?;
 
     let mut peer = tipc::connect::<Stream, _>(addr)?;
 
